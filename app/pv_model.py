@@ -1,180 +1,225 @@
+"""PV forecast correction (ha-ml-layer).
+
+Two models, rebuilt 14.10.2026:
+
+1. Day-ahead model (DayAheadModel)
+   Uses ONLY features that also exist for future time steps: Solcast P50/P10/P90,
+   clear-sky GHI, solar elevation and cyclic time. Training and forecast use the
+   SAME feature builder, so the curve sent to EMHASS is computed exactly the way
+   the model was trained. (Before: training saw live Ecowitt cloud data, the
+   forecast path always assumed a clear sky -> systematic over-forecast on
+   cloudy afternoons.)
+
+2. Nowcast model (NowcastModel)
+   Corrects only the CURRENT value with live Ecowitt irradiance (clear-sky index
+   and its short-term variability). Its effect on the curve fades out over the
+   next ~2 hours (smart persistence), because a sensor cannot see clouds that
+   have not arrived yet.
+
+Input sources are independent of EMHASS: Solcast directly, never
+sensor.p_pv_forecast (that is EMHASS' own output and would become the ML
+curve itself once EMHASS receives it -> the model would learn from its own
+prediction).
+"""
 import logging
 import math
 import pickle
-from datetime import datetime
+from collections import deque
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
 import pvlib
-from river import compose, forest, metrics
+from river import forest, metrics
 
 log = logging.getLogger("pv_model")
 
-MODEL_PATH = Path("/data/pv_forecast_model.pkl")
-
-# --- Verifiziert via ha_search am 21.08.2026 ---------------------------------
-ENTITY_FORECAST_SOLAR = "sensor.p_pv_forecast"                         # Forecast.Solar, Momentanleistung aktuelle Stunde (W)
-ENTITY_SOLCAST = "sensor.solcast_pv_forecast_forecast_this_hour"       # Solcast, Energie aktuelle Stunde (Wh) -- ACHTUNG: andere
-                                                                        # physikalische Einheit als die anderen beiden (W)! Numerisch
-                                                                        # ähnliche Größenordnung (Wh/Stunde ~ mittlere Leistung), aber
-                                                                        # nicht exakt gleich. Modell lernt trotzdem eine sinnvolle
-                                                                        # Korrektur, da es nur auf Konsistenz der Zahl ankommt -- sauberer
-                                                                        # wäre aber Division durch 1h/Normierung, falls sich das Ergebnis
-                                                                        # nach den ersten Tagen als systematisch verzerrt zeigt.
-ENTITY_ACTUAL_POWER = "sensor.pv_power"                                # Ist-Leistung, aktuell (W) -- bereits im Fast-Charging-Test verifiziert
-ENTITY_OUTPUT_CORRECTED = "sensor.pv_ml_corrected_forecast"            # neuer, extern gesetzter Sensor (Output)
-
-# --- Ergänzt am 10.09.2026: Ecowitt WS69/GW3000, echte Wettermessung --------
-ENTITY_IRRADIANCE = "sensor.ecowitt_solar_radiation_1f335"             # W/m², echte Messung statt nur Prognose (Entity-ID kann sich bei Hardware-Reconnect ändern!)
-ENTITY_PRESSURE = "sensor.ecowitt_pressure_relative"                   # hPa, relativer Luftdruck
+# --- Entities (verified live 14.10.2026) ------------------------------------
+ENTITY_SOLCAST_TODAY = "sensor.solcast_pv_forecast_forecast_today"        # .detailedForecast: pv_estimate/10/90 in kW (30-min average power)
+ENTITY_SOLCAST_TOMORROW = "sensor.solcast_pv_forecast_forecast_tomorrow"
+ENTITY_ACTUAL_POWER = "sensor.goodwe_pv_power_effective"                  # W, Modbus primary + native fallback
+ENTITY_ACTUAL_POWER_FALLBACK = "sensor.pv_power"                          # W, native GoodWe (was unavailable on 14.10.)
+ENTITY_IRRADIANCE = "sensor.ecowitt_solar_radiation_1f335"                # W/m^2 (entity id can change after a gateway reconnect!)
+ENTITY_OUTPUT_CORRECTED = "sensor.pv_ml_corrected_forecast"               # current value (day-ahead x nowcast)
+ENTITY_OUTPUT_CURVE = "sensor.pv_ml_corrected_forecast_curve"             # 48 x 30 min, read by the EMHASS rest_commands
 # -----------------------------------------------------------------------------
 
-# --- NEU: Forecast-Kurve statt nur Momentanwert (18.09.2026) ----------------
-# Für zukünftige Zeitschritte gibt es keine Ecowitt-Live-Messung (irradiance/
-# pressure). Ersatz: clear_sky_ghi (pvlib, für jeden Zeitpunkt berechenbar) als
-# Irradiance-Platzhalter, Standardatmosphäre (1013.25 hPa) für Druck. Gleiches,
-# bereits trainiertes Modell -- kein Re-Training, nur andere Inputs.
-DEFAULT_LATITUDE = 48.2
-DEFAULT_LONGITUDE = 16.1
-DEFAULT_TZ = "Europe/Vienna"
-STANDARD_PRESSURE_HPA = 1013.25
+DAYAHEAD_MODEL_PATH = Path("/data/pv_dayahead_model.pkl")
+NOWCAST_MODEL_PATH = Path("/data/pv_nowcast_model.pkl")
+
+LATITUDE = 48.2
+LONGITUDE = 16.1
+TZ = "Europe/Vienna"
+
+SLOT = timedelta(minutes=30)
+HORIZON_SLOTS = 48
+KW_TO_W = 1000.0               # Solcast pv_estimate is kW (sum over a day = 2 x daily kWh, checked 14.10.2026)
+PLAUSIBLE_MAX_W = 15000
+MIN_ELEVATION_LEARN = 5.0      # degrees; below that PV is ~0 and only adds noise
+NOWCAST_TAU_H = 1.0            # nowcast influence decays with exp(-dt/tau)
+NOWCAST_FACTOR_BOUNDS = (0.1, 2.0)
+NOWCAST_MIN_BASE_W = 100.0     # below this the ratio nowcast/day-ahead is meaningless
+CSI_WINDOW = 6                 # cycles for the variability feature (6 x 5 min = 30 min)
+
+_LOCATION = pvlib.location.Location(latitude=LATITUDE, longitude=LONGITUDE, tz=TZ)
 
 
-def _time_features(ts: datetime) -> dict:
-    """Zyklische Zeit-Features statt roher Integer -- vermeidet den künstlichen
-    Sprung Dezember->Januar / 23 Uhr->0 Uhr, den ein Baummodell sonst falsch
-    als 'weit entfernt' interpretieren würde."""
-    hour_angle = 2 * math.pi * ts.hour / 24
-    month_angle = 2 * math.pi * ts.month / 12
+# --- Solar geometry ----------------------------------------------------------
+def solar_geometry(timestamps):
+    """Clear-sky GHI (Ineichen) and apparent solar elevation for a list of
+    timezone-aware datetimes, in one pvlib call."""
+    times = pd.DatetimeIndex(timestamps)
+    if times.tz is None:
+        times = times.tz_localize("UTC")
+    clearsky = _LOCATION.get_clearsky(times, model="ineichen")
+    solpos = _LOCATION.get_solarposition(times)
+    return list(clearsky["ghi"].values), list(solpos["apparent_elevation"].values)
+
+
+def _time_features(ts):
+    """Cyclic time features in UTC (no DST jumps). Day of year instead of
+    month, fractional hour instead of integer hour (no saw-tooth)."""
+    ts_utc = pd.Timestamp(ts).tz_convert("UTC")
+    hour = ts_utc.hour + ts_utc.minute / 60.0
+    doy = ts_utc.dayofyear
     return {
-        "hour_sin": math.sin(hour_angle),
-        "hour_cos": math.cos(hour_angle),
-        "month_sin": math.sin(month_angle),
-        "month_cos": math.cos(month_angle),
-        "weekday": ts.weekday(),
+        "hour_sin": math.sin(2 * math.pi * hour / 24),
+        "hour_cos": math.cos(2 * math.pi * hour / 24),
+        "doy_sin": math.sin(2 * math.pi * doy / 365.25),
+        "doy_cos": math.cos(2 * math.pi * doy / 365.25),
     }
 
 
-def _clear_sky_ghi(ts: datetime) -> float:
-    """Gemeinsame Clear-Sky-Berechnung für den Live- und den Forecast-Pfad."""
-    try:
-        location = pvlib.location.Location(
-            latitude=DEFAULT_LATITUDE, longitude=DEFAULT_LONGITUDE, tz=DEFAULT_TZ
-        )
-        times = pd.DatetimeIndex([ts])
-        clearsky = location.get_clearsky(times, model="ineichen")
-        return float(clearsky["ghi"].values[0]) if len(clearsky) > 0 else 100.0
-    except Exception as e:
-        log.debug("Clear-sky Berechnung fehlgeschlagen: %s", e)
-        return 100.0
+# --- Solcast -----------------------------------------------------------------
+def parse_solcast(today_attr, tomorrow_attr):
+    """Merged Solcast detailedForecast as a sorted list of
+    (period_start, p50_w, p10_w, p90_w)."""
+    rows = []
+    for entry in (today_attr or []) + (tomorrow_attr or []):
+        try:
+            start = entry["period_start"]
+            if isinstance(start, str):
+                start = datetime.fromisoformat(start)
+            rows.append((
+                start,
+                float(entry["pv_estimate"]) * KW_TO_W,
+                float(entry.get("pv_estimate10", entry["pv_estimate"])) * KW_TO_W,
+                float(entry.get("pv_estimate90", entry["pv_estimate"])) * KW_TO_W,
+            ))
+        except (KeyError, TypeError, ValueError):
+            continue
+    rows.sort(key=lambda r: r[0])
+    return rows
 
 
-def build_features(ts: datetime, forecast_solar: float, solcast: float,
-                    irradiance: float, pressure: float) -> dict:
+def current_slot_index(rows, now):
+    """Index of the Solcast slot that contains `now`, or None."""
+    for i, (start, *_rest) in enumerate(rows):
+        if start <= now < start + SLOT:
+            return i
+    return None
+
+
+# --- Day-ahead features (identical for training and forecast) ---------------
+def dayahead_features(ts, p50, p10, p90, clear_sky_ghi, elevation):
     x = _time_features(ts)
-    x["forecast_solar"] = forecast_solar
-    x["solcast"] = solcast
-    x["forecast_mean"] = (forecast_solar + solcast) / 2
-    x["forecast_spread"] = abs(forecast_solar - solcast)
-    x["irradiance"] = irradiance
-    x["pressure"] = pressure
-
-    # ===== CSI-Features (27.09.2026) =====
-    clear_sky_ghi = _clear_sky_ghi(ts)
-
-    # CSI nur wenn irradiance vorhanden
-    if irradiance is not None and irradiance >= 0:
-        measured_csi = irradiance / max(clear_sky_ghi, 1.0)
-        x["measured_csi"] = min(measured_csi, 1.5)  # cap bei 1.5
-    else:
-        x["measured_csi"] = 0.0
-
+    x["solcast_p50"] = p50
+    x["solcast_p10"] = p10
+    x["solcast_p90"] = p90
+    x["solcast_spread"] = p90 - p10
     x["clear_sky_ghi"] = clear_sky_ghi
-
+    x["elevation"] = elevation
+    # scale-free: how much of the clear-sky potential Solcast expects
+    x["solcast_vs_clearsky"] = p50 / max(clear_sky_ghi, 1.0)
     return x
 
 
-def build_features_forecast(ts: datetime, forecast_solar: float, solcast: float) -> dict:
-    """Wie build_features(), aber ohne Live-Messwerte -- für Zukunfts-Zeitschritte.
-    irradiance wird durch clear_sky_ghi selbst ersetzt (neutrale Annahme: 'erwarteter'
-    Wert ohne Wolken-Info), pressure durch die Standardatmosphäre. measured_csi wird
-    dadurch automatisch 1.0 (irradiance == clear_sky_ghi), was als neutrales
-    Cloud-Korrektursignal für die Zukunft interpretiert wird."""
-    x = _time_features(ts)
-    x["forecast_solar"] = forecast_solar
-    x["solcast"] = solcast
-    x["forecast_mean"] = (forecast_solar + solcast) / 2
-    x["forecast_spread"] = abs(forecast_solar - solcast)
-
-    clear_sky_ghi = _clear_sky_ghi(ts)
-
-    x["irradiance"] = clear_sky_ghi
-    x["pressure"] = STANDARD_PRESSURE_HPA
-    x["measured_csi"] = 1.0
-    x["clear_sky_ghi"] = clear_sky_ghi
-
-    return x
-
-
-class PVForecastCorrectionModel:
-    """Online-Regressor: lernt datenpunktweise, wie die tatsächliche PV-Leistung
-    von den beiden Prognose-Providern (+ Zeitkontext) abweicht. Kein Batch-
-    Neu-Training -- jeder neue Ist-Wert aktualisiert das Modell sofort
-    (learn_one), passend zum ausdrücklichen Wunsch nach kontinuierlichem
-    Lernen statt reiner Ist-Soll-Protokollierung (siehe Doku Abschnitt 2.3)."""
-
-    def __init__(self):
-        self.model = compose.Pipeline(
-            compose.Select(
-                "hour_sin", "hour_cos", "month_sin", "month_cos",
-                "weekday", "forecast_solar", "solcast",
-                "forecast_mean", "forecast_spread",
-                "irradiance", "pressure",
-                "measured_csi", "clear_sky_ghi",
-            ),
-            forest.ARFRegressor(n_models=10, seed=42),
-        )
+# --- Models ------------------------------------------------------------------
+class _PickledRegressor:
+    def __init__(self, path, n_models):
+        self.path = path
+        self.model = forest.ARFRegressor(n_models=n_models, seed=42)
         self.mae = metrics.MAE()
-        self._load()
-
-    def _load(self):
-        if MODEL_PATH.exists():
+        self.n_learned = 0
+        if path.exists():
             try:
-                with open(MODEL_PATH, "rb") as f:
+                with open(path, "rb") as f:
                     state = pickle.load(f)
-                    self.model = state["model"]
-                    self.mae = state["mae"]
-                log.info("Modell geladen, bisheriger MAE: %.1f W", self.mae.get())
+                self.model = state["model"]
+                self.mae = state["mae"]
+                self.n_learned = state.get("n_learned", 0)
+                log.info("%s loaded, MAE %.1f W, %d samples", path.name, self.mae.get(), self.n_learned)
             except Exception:
-                log.exception("Konnte gespeichertes Modell nicht laden, starte frisch.")
+                log.exception("Could not load %s, starting fresh", path)
 
     def save(self):
-        MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with open(MODEL_PATH, "wb") as f:
-            pickle.dump({"model": self.model, "mae": self.mae}, f)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with open(self.path, "wb") as f:
+            pickle.dump({"model": self.model, "mae": self.mae, "n_learned": self.n_learned}, f)
 
-    def predict(self, x: dict) -> float:
-        return self.model.predict_one(x)
+    def predict(self, x):
+        y = self.model.predict_one(x)
+        return None if y is None else min(max(y, 0.0), PLAUSIBLE_MAX_W)
 
-    def learn(self, x: dict, y_actual: float):
+    def learn(self, x, y):
         y_pred = self.model.predict_one(x)
         if y_pred is not None:
-            self.mae.update(y_actual, y_pred)
-        self.model.learn_one(x, y_actual)
-
-    def predict_curve(self, timestamps, forecast_solar_values, solcast_values):
-        """Wendet das JETZT bereits trainierte Modell auf eine Reihe zukünftiger
-        Zeitschritte an. Kein learn() hier -- Lernen bleibt exklusiv der
-        Ist-Wert-Schleife in main.py vorbehalten (echte Ist-Werte, nicht
-        Prognosen). Gibt eine Liste von (timestamp, korrigierter_wert)-Tupeln
-        zurück, in derselben Reihenfolge wie die Eingabe-Listen."""
-        out = []
-        for ts, fs, sc in zip(timestamps, forecast_solar_values, solcast_values):
-            x = build_features_forecast(ts, fs, sc)
-            pred = self.predict(x)
-            out.append((ts, pred if pred is not None else fs))
-        return out
+            self.mae.update(y, y_pred)
+        self.model.learn_one(x, y)
+        self.n_learned += 1
 
     @property
-    def current_mae(self) -> float:
+    def current_mae(self):
         return self.mae.get()
+
+
+class DayAheadModel(_PickledRegressor):
+    def __init__(self):
+        super().__init__(DAYAHEAD_MODEL_PATH, n_models=10)
+
+    def predict_or_solcast(self, x):
+        """Fallback to raw Solcast P50 while the model has not learned yet."""
+        if x["elevation"] <= 0:
+            return 0.0
+        y = self.predict(x)
+        return x["solcast_p50"] if y is None else y
+
+
+class NowcastModel(_PickledRegressor):
+    def __init__(self):
+        super().__init__(NOWCAST_MODEL_PATH, n_models=5)
+        self.csi_history = deque(maxlen=CSI_WINDOW)
+
+    def features(self, dayahead_now, irradiance, clear_sky_ghi, elevation):
+        csi = min(irradiance / max(clear_sky_ghi, 1.0), 1.5)
+        self.csi_history.append(csi)
+        hist = list(self.csi_history)
+        mean = sum(hist) / len(hist)
+        std = math.sqrt(sum((c - mean) ** 2 for c in hist) / len(hist))
+        return {
+            "dayahead_now": dayahead_now,
+            "irradiance": irradiance,
+            "measured_csi": csi,
+            "csi_mean_30min": mean,
+            "csi_std_30min": std,   # high = broken clouds
+            "elevation": elevation,
+        }
+
+
+def nowcast_factor(nowcast_now, dayahead_now):
+    """Ratio nowcast / day-ahead for the current slot, clamped. 1.0 = no correction."""
+    if nowcast_now is None or dayahead_now < NOWCAST_MIN_BASE_W:
+        return 1.0
+    lo, hi = NOWCAST_FACTOR_BOUNDS
+    return min(max(nowcast_now / dayahead_now, lo), hi)
+
+
+def blend_curve(slot_starts, dayahead_values, now, factor):
+    """Apply the nowcast factor to the day-ahead curve, fading out with
+    exp(-dt/tau): full effect now, ~37 % after 1 h, ~5 % after 3 h."""
+    out = []
+    for start, value in zip(slot_starts, dayahead_values):
+        dt_h = max((start - now).total_seconds() / 3600.0, 0.0)
+        weight = math.exp(-dt_h / NOWCAST_TAU_H)
+        out.append(max(value * (1.0 + (factor - 1.0) * weight), 0.0))
+    return out

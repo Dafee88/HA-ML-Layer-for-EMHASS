@@ -6,64 +6,157 @@ from config import Config
 from ha_client import HAClient
 from pv_model import (
     ENTITY_ACTUAL_POWER,
-    ENTITY_FORECAST_SOLAR,
-    ENTITY_OUTPUT_CORRECTED,
-    ENTITY_SOLCAST,
+    ENTITY_ACTUAL_POWER_FALLBACK,
     ENTITY_IRRADIANCE,
-    ENTITY_PRESSURE,
-    PVForecastCorrectionModel,
-    build_features,
+    ENTITY_OUTPUT_CORRECTED,
+    ENTITY_OUTPUT_CURVE,
+    ENTITY_SOLCAST_TODAY,
+    ENTITY_SOLCAST_TOMORROW,
+    HORIZON_SLOTS,
+    MIN_ELEVATION_LEARN,
+    PLAUSIBLE_MAX_W,
+    DayAheadModel,
+    NowcastModel,
+    blend_curve,
+    current_slot_index,
+    dayahead_features,
+    nowcast_factor,
+    parse_solcast,
+    solar_geometry,
 )
-from building_thermal import BuildingThermalModel  # NEU 28.09.2026
-
-# --- NEU: Forecast-Kurve statt nur Momentanwert (18.09.2026) ----------------
-ENTITY_PV_FORECAST_RAW = "sensor.p_pv_forecast"                         # EMHASS' eigener physikalischer Forecast (30-Min-Array in .forecasts)
-ENTITY_SOLCAST_TODAY = "sensor.solcast_pv_forecast_forecast_today"       # .detailedForecast, 30-Min-Schritte, kWh/Halbstunde
-ENTITY_SOLCAST_TOMORROW = "sensor.solcast_pv_forecast_forecast_tomorrow"
-ENTITY_OUTPUT_CURVE = "sensor.pv_ml_corrected_forecast_curve"            # NEUER Sensor -- getrennt vom Nowcast-Sensor, damit sich beide nicht überschreiben
-
-CURVE_UPDATE_EVERY_N_CYCLES = 6  # FIX 29.09.2026: poll_interval ist 300s -> 6 Zyklen = 30 Min (vorher 60 = 5h; EMHASS-Payload nutzt die Kurve nur, wenn < 1h alt)
-# -----------------------------------------------------------------------------
+from building_thermal import BuildingThermalModel  # 28.09.2026
 
 
-def _safe_float(state_dict, default=None):
+def _safe_float(state_dict):
     if state_dict is None:
-        return default
+        return None
     try:
         return float(state_dict["state"])
     except (KeyError, ValueError, TypeError):
-        return default
+        return None
 
 
-PLAUSIBLE_MAX_W = 15000
-
-
-def _is_plausible(value):
+def _plausible(value):
     return value is not None and 0 <= value <= PLAUSIBLE_MAX_W
 
 
-def _merge_forecast_arrays(pv_forecast_attr, solcast_today_attr, solcast_tomorrow_attr):
-    """Baut für jeden 30-Min-Zeitstempel aus EMHASS' eigenem Forecast
-    (sensor.p_pv_forecast.forecasts) ein Paar (forecast_solar, solcast), indem
-    der jeweils passende Solcast-detailedForecast-Eintrag (heute+morgen
-    zusammengeführt) gesucht wird. Solcast liefert kWh/30min -> *2000 für
-    durchschnittliche W-Leistung im Intervall. Zeitschritte ohne passenden
-    Solcast-Eintrag werden ausgelassen, statt geraten."""
-    solcast_by_ts = {}
-    for entry in (solcast_today_attr or []) + (solcast_tomorrow_attr or []):
-        solcast_by_ts[entry["period_start"]] = entry["pv_estimate"] * 2000  # kWh/30min -> W
+def _attr(states, entity, key):
+    return ((states.get(entity) or {}).get("attributes") or {}).get(key)
 
-    merged_ts, merged_fs, merged_sc = [], [], []
-    for entry in pv_forecast_attr or []:
-        ts_str = entry["date"]
-        fs_val = float(entry["p_pv_forecast"])
-        sc_val = solcast_by_ts.get(ts_str)
-        if sc_val is None:
-            continue
-        merged_ts.append(datetime.fromisoformat(ts_str))
-        merged_fs.append(fs_val)
-        merged_sc.append(sc_val)
-    return merged_ts, merged_fs, merged_sc
+
+def pv_cycle(ha, dayahead, nowcast, log):
+    """One 5-minute cycle: learn both models on the current slot, then publish
+    the current value and the full 48-slot curve (every cycle, so the curve is
+    always < 1 h old for the EMHASS payload and reappears right after an HA
+    restart)."""
+    states = ha.get_states([
+        ENTITY_SOLCAST_TODAY,
+        ENTITY_SOLCAST_TOMORROW,
+        ENTITY_ACTUAL_POWER,
+        ENTITY_ACTUAL_POWER_FALLBACK,
+        ENTITY_IRRADIANCE,
+    ])
+    now = datetime.now(timezone.utc)
+
+    rows = parse_solcast(
+        _attr(states, ENTITY_SOLCAST_TODAY, "detailedForecast"),
+        _attr(states, ENTITY_SOLCAST_TOMORROW, "detailedForecast"),
+    )
+    idx = current_slot_index(rows, now)
+    if idx is None:
+        log.warning("Solcast detailedForecast has no slot for %s -- skipping cycle.", now.isoformat())
+        return
+    horizon = rows[idx:idx + HORIZON_SLOTS]
+
+    starts = [r[0] for r in horizon]
+    ghi, elev = solar_geometry(starts)
+    x_curve = [dayahead_features(s, p50, p10, p90, g, e)
+               for (s, p50, p10, p90), g, e in zip(horizon, ghi, elev)]
+
+    # current slot = first slot of the horizon; same features as the curve
+    x_now = x_curve[0]
+    ghi_now, elev_now = solar_geometry([now])
+    ghi_now, elev_now = ghi_now[0], elev_now[0]
+
+    actual = _safe_float(states.get(ENTITY_ACTUAL_POWER))
+    actual_source = ENTITY_ACTUAL_POWER
+    if actual is None:
+        actual = _safe_float(states.get(ENTITY_ACTUAL_POWER_FALLBACK))
+        actual_source = ENTITY_ACTUAL_POWER_FALLBACK
+    irradiance = _safe_float(states.get(ENTITY_IRRADIANCE))
+
+    dayahead_now = dayahead.predict_or_solcast(x_now)
+
+    # --- nowcast (only with live Ecowitt data) ---
+    nowcast_now = None
+    x_nc = None
+    if irradiance is not None and irradiance >= 0 and elev_now > 0:
+        x_nc = nowcast.features(dayahead_now, irradiance, ghi_now, elev_now)
+        nowcast_now = nowcast.predict(x_nc)
+
+    # --- learning ---
+    if not _plausible(actual):
+        log.warning("Actual PV missing/implausible (%s=%s, fallback %s) -- not learning this cycle.",
+                    ENTITY_ACTUAL_POWER, _safe_float(states.get(ENTITY_ACTUAL_POWER)),
+                    _safe_float(states.get(ENTITY_ACTUAL_POWER_FALLBACK)))
+    elif elev_now >= MIN_ELEVATION_LEARN:
+        dayahead.learn(x_now, actual)
+        dayahead.save()
+        if x_nc is not None:
+            nowcast.learn(x_nc, actual)
+            nowcast.save()
+
+    # --- publish current value ---
+    factor = nowcast_factor(nowcast_now, dayahead_now)
+    corrected_now = dayahead_now * factor if nowcast_now is not None else dayahead_now
+    ha.set_state(
+        ENTITY_OUTPUT_CORRECTED,
+        round(corrected_now, 1),
+        attributes={
+            "unit_of_measurement": "W",
+            "device_class": "power",
+            "friendly_name": "PV Forecast (ML-korrigiert)",
+            "current_mae_w": round(nowcast.current_mae if nowcast.n_learned else dayahead.current_mae, 1),
+            "mae_dayahead_w": round(dayahead.current_mae, 1),
+            "mae_nowcast_w": round(nowcast.current_mae, 1),
+            "samples_dayahead": dayahead.n_learned,
+            "samples_nowcast": nowcast.n_learned,
+            "dayahead_now_w": round(dayahead_now, 1),
+            "solcast_p50_now_w": round(x_now["solcast_p50"], 1),
+            "nowcast_factor": round(factor, 3),
+            "actual_source": actual_source,
+            "ecowitt_irradiance_w_m2": round(irradiance, 1) if irradiance is not None else None,
+            "source": "ha-ml-layer / day-ahead (Solcast-only) + Ecowitt nowcast",
+        },
+    )
+
+    # --- publish curve ---
+    dayahead_curve = [dayahead.predict_or_solcast(x) for x in x_curve]
+    curve = blend_curve(starts, dayahead_curve, now, factor)
+    ha.set_state(
+        ENTITY_OUTPUT_CURVE,
+        round(curve[0], 1),
+        attributes={
+            "unit_of_measurement": "W",
+            "device_class": "power",
+            "friendly_name": "PV Forecast Curve (ML-korrigiert)",
+            "forecasts": [
+                {"date": s.isoformat(), "p_pv_forecast": round(v, 1)}
+                for s, v in zip(starts, curve)
+            ],
+            "nowcast_factor": round(factor, 3),
+            "source": "ha-ml-layer / day-ahead (Solcast-only) + Ecowitt nowcast",
+        },
+    )
+
+    log.info(
+        "now: solcast=%.0fW dayahead=%.0fW nowcast=%s factor=%.2f actual=%s | curve %d slots | "
+        "MAE dayahead=%.1fW (n=%d) nowcast=%.1fW (n=%d)",
+        x_now["solcast_p50"], dayahead_now,
+        "-" if nowcast_now is None else f"{nowcast_now:.0f}W", factor,
+        "-" if actual is None else f"{actual:.0f}W", len(curve),
+        dayahead.current_mae, dayahead.n_learned, nowcast.current_mae, nowcast.n_learned,
+    )
 
 
 def run():
@@ -72,134 +165,32 @@ def run():
     log = logging.getLogger("main")
 
     pv_enabled = cfg.models.get("pv_forecast_correction", False)
-    thermal_enabled = cfg.models.get("building_thermal", False)   # NEU 28.09.2026
+    thermal_enabled = cfg.models.get("building_thermal", False)
 
     if not pv_enabled and not thermal_enabled:
-        log.info("Alle Modelle deaktiviert (Add-on-Option), beende.")
+        log.info("All models disabled (add-on option), exiting.")
         return
 
     ha = HAClient(cfg.ha_url, cfg.token)
-    model = PVForecastCorrectionModel() if pv_enabled else None
-    thermal = BuildingThermalModel() if thermal_enabled else None   # NEU 28.09.2026
+    dayahead = DayAheadModel() if pv_enabled else None
+    nowcast = NowcastModel() if pv_enabled else None
+    thermal = BuildingThermalModel() if thermal_enabled else None
 
-    log.info("ha-ml-layer gestartet. Poll-Intervall: %ss | pv=%s thermal=%s",
+    log.info("ha-ml-layer started. Poll interval: %ss | pv=%s thermal=%s",
              cfg.poll_interval, pv_enabled, thermal_enabled)
 
-    cycle_count = 0
-
     while True:
-        # --- NEU 28.09.2026: Gebaeude-Waermemodell, eigener try-Block ---
         if thermal is not None:
             try:
                 thermal.update(ha)
             except Exception:
-                log.exception("Fehler im building_thermal-Zyklus, naechster Versuch im naechsten Intervall.")
+                log.exception("Error in building_thermal cycle, retrying next interval.")
 
-        if model is None:
-            time.sleep(cfg.poll_interval)
-            continue
-
-        try:
-            states = ha.get_states([
-                ENTITY_FORECAST_SOLAR,
-                ENTITY_SOLCAST,
-                ENTITY_ACTUAL_POWER,
-                ENTITY_IRRADIANCE,
-                ENTITY_PRESSURE
-            ])
-
-            forecast_solar = _safe_float(states.get(ENTITY_FORECAST_SOLAR))
-            solcast = _safe_float(states.get(ENTITY_SOLCAST))
-            actual = _safe_float(states.get(ENTITY_ACTUAL_POWER))
-            ecowitt_irradiance = _safe_float(states.get(ENTITY_IRRADIANCE))
-            ecowitt_pressure = _safe_float(states.get(ENTITY_PRESSURE))
-
-            if None in (forecast_solar, solcast, actual):
-                log.warning(
-                    "Fehlende Kernwerte (forecast_solar=%s, solcast=%s, actual=%s) -- "
-                    "Entity-IDs in pv_model.py verifiziert? Überspringe diesen Zyklus.",
-                    forecast_solar, solcast, actual,
-                )
-            elif not all(_is_plausible(v) for v in (forecast_solar, solcast, actual)):
-                log.warning(
-                    "UNPLAUSIBLER Wert erkannt (forecast_solar=%s, solcast=%s, actual=%s), "
-                    "> %sW oder negativ -- vermutlich Sensor-/API-Glitch. NICHT gelernt, "
-                    "Zyklus übersprungen, um das Modell nicht zu vergiften.",
-                    forecast_solar, solcast, actual, PLAUSIBLE_MAX_W,
-                )
-            else:
-                if ecowitt_irradiance is None:
-                    log.debug("Ecowitt-Irradiance nicht verfügbar, verwende None für build_features")
-                if ecowitt_pressure is None:
-                    log.debug("Ecowitt-Pressure nicht verfügbar, verwende None für build_features")
-
-                now = datetime.now(timezone.utc)
-                x = build_features(now, forecast_solar, solcast, ecowitt_irradiance, ecowitt_pressure)
-                predicted = model.predict(x)
-                model.learn(x, actual)
-                model.save()
-
-                if predicted is not None:
-                    ha.set_state(
-                        ENTITY_OUTPUT_CORRECTED,
-                        round(predicted, 1),
-                        attributes={
-                            "unit_of_measurement": "W",
-                            "friendly_name": "PV Forecast (ML-korrigiert)",
-                            "current_mae_w": round(model.current_mae, 1),
-                            "source": "ha-ml-layer / river ARFRegressor + Ecowitt + CSI",
-                            "ecowitt_irradiance_w_m2": round(ecowitt_irradiance, 1) if ecowitt_irradiance else None,
-                            "ecowitt_pressure_hpa": round(ecowitt_pressure, 1) if ecowitt_pressure else None,
-                        },
-                    )
-                    log.info(
-                        "Vorhersage=%.0fW, Ist=%.0fW, laufender MAE=%.1fW | "
-                        "Ecowitt: irrad=%.0f W/m² pressure=%.1f hPa",
-                        predicted, actual, model.current_mae,
-                        ecowitt_irradiance if ecowitt_irradiance else -1,
-                        ecowitt_pressure if ecowitt_pressure else -1,
-                    )
-
-            # --- NEU: Forecast-Kurve, nur alle CURVE_UPDATE_EVERY_N_CYCLES Zyklen ---
-            cycle_count += 1
-            if cycle_count % CURVE_UPDATE_EVERY_N_CYCLES == 0:
-                try:
-                    curve_states = ha.get_states([
-                        ENTITY_PV_FORECAST_RAW,
-                        ENTITY_SOLCAST_TODAY,
-                        ENTITY_SOLCAST_TOMORROW,
-                    ])
-                    pv_fc = (curve_states.get(ENTITY_PV_FORECAST_RAW) or {}).get("attributes", {}).get("forecasts")
-                    sc_today = (curve_states.get(ENTITY_SOLCAST_TODAY) or {}).get("attributes", {}).get("detailedForecast")
-                    sc_tomorrow = (curve_states.get(ENTITY_SOLCAST_TOMORROW) or {}).get("attributes", {}).get("detailedForecast")
-
-                    ts_list, fs_list, sc_list = _merge_forecast_arrays(pv_fc, sc_today, sc_tomorrow)
-                    if ts_list:
-                        curve = model.predict_curve(ts_list, fs_list, sc_list)
-                        ha.set_state(
-                            ENTITY_OUTPUT_CURVE,
-                            round(curve[0][1], 1) if curve else 0,
-                            attributes={
-                                "unit_of_measurement": "W",
-                                "friendly_name": "PV Forecast Curve (ML-korrigiert)",
-                                "forecasts": [
-                                    {"date": ts.isoformat(), "p_pv_forecast": round(val, 1)}
-                                    for ts, val in curve
-                                ],
-                                "source": "ha-ml-layer / river ARFRegressor (forecast mode)",
-                            },
-                        )
-                        log.info("Forecast-Kurve aktualisiert: %d Zeitschritte", len(curve))
-                    else:
-                        log.warning(
-                            "Forecast-Kurve: keine überlappenden Zeitstempel zwischen "
-                            "EMHASS- und Solcast-Forecast gefunden."
-                        )
-                except Exception:
-                    log.exception("Fehler bei Forecast-Kurven-Aktualisierung, nächster Versuch beim nächsten Intervall.")
-
-        except Exception:
-            log.exception("Fehler im Poll-Zyklus, versuche es im nächsten Intervall erneut.")
+        if dayahead is not None:
+            try:
+                pv_cycle(ha, dayahead, nowcast, log)
+            except Exception:
+                log.exception("Error in PV cycle, retrying next interval.")
 
         time.sleep(cfg.poll_interval)
 
