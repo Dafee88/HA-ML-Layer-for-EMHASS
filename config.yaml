@@ -1,0 +1,33 @@
+name: "HA ML Layer"
+version: "0.1.0"
+slug: "ha_ml_layer"
+description: "Zentrale Online-Learning-Schicht (River) für PV-Prognose-Korrektur und künftig Gebäude-Wärmemodell"
+url: "https://github.com/dafee/ha-ml-layer"
+arch:
+  - aarch64
+  - amd64
+init: false
+startup: application
+boot: auto
+map:
+  - config:rw
+options:
+  ha_url: "http://supervisor/core"
+  poll_interval_seconds: 300
+  log_level: "info"
+  models:
+    - name: "pv_forecast_correction"
+      enabled: true
+    - name: "building_thermal"
+      enabled: false
+schema:
+  ha_url: str
+  poll_interval_seconds: int(60,3600)
+  log_level: list(debug|info|warning|error)
+  models:
+    - name: str
+      enabled: bool
+ingress: false
+hassio_api: true
+homeassistant_api: true
+
