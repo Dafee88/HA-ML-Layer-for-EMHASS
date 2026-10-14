@@ -60,6 +60,8 @@ NOWCAST_TAU_H = 1.0            # nowcast influence decays with exp(-dt/tau)
 NOWCAST_FACTOR_BOUNDS = (0.1, 2.0)
 NOWCAST_MIN_BASE_W = 100.0     # below this the ratio nowcast/day-ahead is meaningless
 CSI_WINDOW = 6                 # cycles for the variability feature (6 x 5 min = 30 min)
+MIN_SAMPLES_DAYAHEAD = 300     # ~2-3 days of daytime 5-min samples before the model replaces raw Solcast
+MIN_SAMPLES_NOWCAST = 150      # ~1-2 days before the Ecowitt nowcast is allowed to correct
 
 _LOCATION = pvlib.location.Location(latitude=LATITUDE, longitude=LONGITUDE, tz=TZ)
 
@@ -136,8 +138,13 @@ def dayahead_features(ts, p50, p10, p90, clear_sky_ghi, elevation):
 
 # --- Models ------------------------------------------------------------------
 class _PickledRegressor:
-    def __init__(self, path, n_models):
+    """River's ARFRegressor returns 0.0 (not None) before it has learned
+    anything. predict() therefore returns None until `min_samples` daytime
+    samples were learned, so callers can fall back instead of sending 0 W."""
+
+    def __init__(self, path, n_models, min_samples):
         self.path = path
+        self.min_samples = min_samples
         self.model = forest.ARFRegressor(n_models=n_models, seed=42)
         self.mae = metrics.MAE()
         self.n_learned = 0
@@ -158,6 +165,8 @@ class _PickledRegressor:
             pickle.dump({"model": self.model, "mae": self.mae, "n_learned": self.n_learned}, f)
 
     def predict(self, x):
+        if self.n_learned < self.min_samples:
+            return None
         y = self.model.predict_one(x)
         return None if y is None else min(max(y, 0.0), PLAUSIBLE_MAX_W)
 
@@ -175,7 +184,7 @@ class _PickledRegressor:
 
 class DayAheadModel(_PickledRegressor):
     def __init__(self):
-        super().__init__(DAYAHEAD_MODEL_PATH, n_models=10)
+        super().__init__(DAYAHEAD_MODEL_PATH, n_models=10, min_samples=MIN_SAMPLES_DAYAHEAD)
 
     def predict_or_solcast(self, x):
         """Fallback to raw Solcast P50 while the model has not learned yet."""
@@ -187,7 +196,7 @@ class DayAheadModel(_PickledRegressor):
 
 class NowcastModel(_PickledRegressor):
     def __init__(self):
-        super().__init__(NOWCAST_MODEL_PATH, n_models=5)
+        super().__init__(NOWCAST_MODEL_PATH, n_models=5, min_samples=MIN_SAMPLES_NOWCAST)
         self.csi_history = deque(maxlen=CSI_WINDOW)
 
     def features(self, dayahead_now, irradiance, clear_sky_ghi, elevation):
