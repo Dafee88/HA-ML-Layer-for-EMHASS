@@ -16,7 +16,11 @@ Robustness:
   - learns only over a >= 60 min window with an unchanged heating state
     (underfloor heating reacts slowly - samples right after a switch are skipped)
   - learns cooling only if T_in - T_out >= 3 K (otherwise the signal is noise)
-  - plausibility bounds, exponential moving average, persisted in /data
+  - a window is dropped if polling had a gap (add-on restart, HA down): a
+    heating switch could have happened unseen in between
+  - a window is dropped if the sun shone noticeably during it: solar gains
+    through the windows would bias k low and h high
+  - plausibility bounds, exponential moving average, persisted in /data (atomic)
   - output sensors are rewritten every cycle (REST states do not survive an HA restart)
 """
 import json
@@ -31,6 +35,7 @@ STATE_FILE = "/data/building_thermal.json"
 ENTITY_OUTDOOR = "sensor.ecowitt_outdoor_temp_1f335"
 ENTITY_OUTDOOR_FALLBACK = "sensor.vitocal_outdoor_temperature"
 ENTITY_STAGE = "input_select.heating_stage"
+ENTITY_IRRADIANCE = "sensor.ecowitt_solar_radiation_1f335"
 
 FLOORS = {
     "downstairs": {
@@ -52,6 +57,7 @@ MIN_DELTA_K = 3.0          # cooling only with enough indoor/outdoor difference
 ALPHA = 0.1                # EMA weight of a new observation
 K_BOUNDS = (0.0005, 0.5)   # 1/h
 H_BOUNDS = (0.01, 5.0)     # K/h
+MAX_IRRADIANCE = 50.0      # W/m^2; above that solar gains distort the window
 
 
 def _f(st):
@@ -62,7 +68,8 @@ def _f(st):
 
 
 class BuildingThermalModel:
-    def __init__(self):
+    def __init__(self, max_gap_s=660):
+        self.max_gap_s = max_gap_s
         self.data = {f: {"k": None, "h": None, "n_k": 0, "n_h": 0,
                          "anchor": None} for f in FLOORS}
         if os.path.exists(STATE_FILE):
@@ -78,8 +85,10 @@ class BuildingThermalModel:
 
     def save(self):
         try:
-            with open(STATE_FILE, "w") as fh:
+            tmp = STATE_FILE + ".tmp"
+            with open(tmp, "w") as fh:
                 json.dump(self.data, fh)
+            os.replace(tmp, STATE_FILE)
         except Exception:
             log.exception("Could not save %s", STATE_FILE)
 
@@ -99,7 +108,7 @@ class BuildingThermalModel:
         return stage == "upstairs" or action == "heating"
 
     def update(self, ha):
-        entities = [ENTITY_OUTDOOR, ENTITY_OUTDOOR_FALLBACK, ENTITY_STAGE]
+        entities = [ENTITY_OUTDOOR, ENTITY_OUTDOOR_FALLBACK, ENTITY_STAGE, ENTITY_IRRADIANCE]
         for cfg in FLOORS.values():
             entities.append(cfg["temp"])
             entities.append(cfg.get("heat_switch") or cfg["climate"])
@@ -108,6 +117,7 @@ class BuildingThermalModel:
         t_out = _f(states.get(ENTITY_OUTDOOR))
         if t_out is None:
             t_out = _f(states.get(ENTITY_OUTDOOR_FALLBACK))
+        irr = _f(states.get(ENTITY_IRRADIANCE))  # None -> no sun filter
         now = time.time()
 
         for floor, cfg in FLOORS.items():
@@ -120,10 +130,14 @@ class BuildingThermalModel:
                 continue
 
             a = d["anchor"]
-            if a is None or a["heat"] != heat:
-                # new window after start or after a heating switch
-                d["anchor"] = {"ts": now, "t_in": t_in, "t_out": t_out, "heat": heat}
+            gap = a is not None and now - a.get("last_ts", a["ts"]) > self.max_gap_s
+            if a is None or a["heat"] != heat or gap:
+                # new window after start, a heating switch or a polling gap
+                d["anchor"] = {"ts": now, "last_ts": now, "t_in": t_in, "t_out": t_out,
+                               "heat": heat, "irr_max": irr or 0.0}
                 continue
+            a["last_ts"] = now
+            a["irr_max"] = max(a.get("irr_max", 0.0), irr or 0.0)
             dt_h = (now - a["ts"]) / 3600.0
             if dt_h * 3600 < MIN_WINDOW_S:
                 continue
@@ -131,7 +145,9 @@ class BuildingThermalModel:
             slope = (t_in - a["t_in"]) / dt_h              # K/h
             delta = (t_in + a["t_in"]) / 2 - (t_out + a["t_out"]) / 2
 
-            if not heat and delta >= MIN_DELTA_K and slope < 0:
+            if a["irr_max"] > MAX_IRRADIANCE:
+                log.debug("%s: window skipped, sun up to %.0f W/m2", floor, a["irr_max"])
+            elif not heat and delta >= MIN_DELTA_K and slope < 0:
                 k_obs = -slope / delta
                 if K_BOUNDS[0] <= k_obs <= K_BOUNDS[1]:
                     d["k"] = self._ema(d["k"], k_obs)
@@ -145,7 +161,8 @@ class BuildingThermalModel:
                     log.info("%s heating: h_obs=%.3fK/h -> h=%.3fK/h (n=%d)", floor, h_obs, d["h"], d["n_h"])
 
             # next window starts here
-            d["anchor"] = {"ts": now, "t_in": t_in, "t_out": t_out, "heat": heat}
+            d["anchor"] = {"ts": now, "last_ts": now, "t_in": t_in, "t_out": t_out,
+                           "heat": heat, "irr_max": irr or 0.0}
 
         self.save()
         self.publish(ha)

@@ -14,9 +14,13 @@ from pv_model import (
     ENTITY_SOLCAST_TOMORROW,
     HORIZON_SLOTS,
     MIN_ELEVATION_LEARN,
+    MIN_SLOT_COVERAGE,
     PLAUSIBLE_MAX_W,
+    SLOT,
+    SLOT_MID,
     DayAheadModel,
     NowcastModel,
+    SlotAccumulator,
     blend_curve,
     current_slot_index,
     dayahead_features,
@@ -44,8 +48,9 @@ def _attr(states, entity, key):
     return ((states.get(entity) or {}).get("attributes") or {}).get(key)
 
 
-def pv_cycle(ha, dayahead, nowcast, log):
-    """One 5-minute cycle: learn both models on the current slot, then publish
+def pv_cycle(ha, dayahead, nowcast, slot_acc, log):
+    """One 5-minute cycle: learn the nowcast on the current reading and the
+    day-ahead model on the slot that just ended, then publish
     the current value and the full 48-slot curve (every cycle, so the curve is
     always < 1 h old for the EMHASS payload and reappears right after an HA
     restart)."""
@@ -69,9 +74,10 @@ def pv_cycle(ha, dayahead, nowcast, log):
     horizon = rows[idx:idx + HORIZON_SLOTS]
 
     starts = [r[0] for r in horizon]
-    ghi, elev = solar_geometry(starts)
-    x_curve = [dayahead_features(s, p50, p10, p90, g, e)
-               for (s, p50, p10, p90), g, e in zip(horizon, ghi, elev)]
+    mids = [s + SLOT_MID for s in starts]
+    ghi, elev = solar_geometry(mids)
+    x_curve = [dayahead_features(m, p50, p10, p90, g, e)
+               for (_s, p50, p10, p90), m, g, e in zip(horizon, mids, ghi, elev)]
 
     # current slot = first slot of the horizon; same features as the curve
     x_now = x_curve[0]
@@ -91,20 +97,25 @@ def pv_cycle(ha, dayahead, nowcast, log):
     nowcast_now = None
     x_nc = None
     if irradiance is not None and irradiance >= 0 and elev_now > 0:
-        x_nc = nowcast.features(dayahead_now, irradiance, ghi_now, elev_now)
-        nowcast_now = nowcast.predict(x_nc)
+        x_nc = nowcast.features(now, dayahead_now, irradiance, ghi_now, elev_now)
+        nowcast_now = nowcast.predict(x_nc, dayahead_now)
 
     # --- learning ---
     if not _plausible(actual):
         log.warning("Actual PV missing/implausible (%s=%s, fallback %s) -- not learning this cycle.",
                     ENTITY_ACTUAL_POWER, _safe_float(states.get(ENTITY_ACTUAL_POWER)),
                     _safe_float(states.get(ENTITY_ACTUAL_POWER_FALLBACK)))
-    elif elev_now >= MIN_ELEVATION_LEARN:
-        dayahead.learn(x_now, actual)
-        dayahead.save()
-        if x_nc is not None:
-            nowcast.learn(x_nc, actual)
-            nowcast.save()
+        actual = None
+    elif elev_now >= MIN_ELEVATION_LEARN and x_nc is not None:
+        nowcast.learn(x_nc, actual, dayahead_now)
+        nowcast.save()
+
+    finished = slot_acc.add(starts[0], x_now, actual)
+    if finished is not None:
+        x_done, mean_done = finished
+        if x_done["elevation"] >= MIN_ELEVATION_LEARN:
+            dayahead.learn_slot(x_done, mean_done)
+            dayahead.save()
 
     # --- publish current value ---
     factor = nowcast_factor(nowcast_now, dayahead_now)
@@ -116,9 +127,13 @@ def pv_cycle(ha, dayahead, nowcast, log):
             "unit_of_measurement": "W",
             "device_class": "power",
             "friendly_name": "PV Forecast (ML-korrigiert)",
-            "current_mae_w": round(nowcast.current_mae if nowcast.n_learned else dayahead.current_mae, 1),
+            "current_mae_w": round(nowcast.current_mae if nowcast.active else dayahead.current_mae, 1),
             "mae_dayahead_w": round(dayahead.current_mae, 1),
+            "mae_solcast_w": round(dayahead.baseline_mae, 1),
             "mae_nowcast_w": round(nowcast.current_mae, 1),
+            "mae_nowcast_baseline_w": round(nowcast.baseline_mae, 1),
+            "dayahead_active": dayahead.active,
+            "nowcast_active": nowcast.active,
             "samples_dayahead": dayahead.n_learned,
             "samples_nowcast": nowcast.n_learned,
             "dayahead_now_w": round(dayahead_now, 1),
@@ -151,11 +166,13 @@ def pv_cycle(ha, dayahead, nowcast, log):
 
     log.info(
         "now: solcast=%.0fW dayahead=%.0fW nowcast=%s factor=%.2f actual=%s | curve %d slots | "
-        "MAE dayahead=%.1fW (n=%d) nowcast=%.1fW (n=%d)",
+        "rolling MAE dayahead=%.1fW vs solcast=%.1fW (n=%d, active=%s) "
+        "nowcast=%.1fW vs dayahead=%.1fW (n=%d, active=%s)",
         x_now["solcast_p50"], dayahead_now,
         "-" if nowcast_now is None else f"{nowcast_now:.0f}W", factor,
         "-" if actual is None else f"{actual:.0f}W", len(curve),
-        dayahead.current_mae, dayahead.n_learned, nowcast.current_mae, nowcast.n_learned,
+        dayahead.current_mae, dayahead.baseline_mae, dayahead.n_learned, dayahead.active,
+        nowcast.current_mae, nowcast.baseline_mae, nowcast.n_learned, nowcast.active,
     )
 
 
@@ -174,7 +191,9 @@ def run():
     ha = HAClient(cfg.ha_url, cfg.token)
     dayahead = DayAheadModel() if pv_enabled else None
     nowcast = NowcastModel() if pv_enabled else None
-    thermal = BuildingThermalModel() if thermal_enabled else None
+    slot_acc = SlotAccumulator(
+        max(1, round(MIN_SLOT_COVERAGE * SLOT.total_seconds() / cfg.poll_interval)))
+    thermal = BuildingThermalModel(max_gap_s=2 * cfg.poll_interval + 60) if thermal_enabled else None
 
     log.info("ha-ml-layer started. Poll interval: %ss | pv=%s thermal=%s",
              cfg.poll_interval, pv_enabled, thermal_enabled)
@@ -188,7 +207,7 @@ def run():
 
         if dayahead is not None:
             try:
-                pv_cycle(ha, dayahead, nowcast, log)
+                pv_cycle(ha, dayahead, nowcast, slot_acc, log)
             except Exception:
                 log.exception("Error in PV cycle, retrying next interval.")
 

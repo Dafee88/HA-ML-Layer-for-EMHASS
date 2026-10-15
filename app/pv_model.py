@@ -16,6 +16,18 @@ Two models, rebuilt 14.10.2026:
    next ~2 hours (smart persistence), because a sensor cannot see clouds that
    have not arrived yet.
 
+Learning scheme (rebuilt 15.10.2026, model files v2):
+  - Both models learn the RESIDUAL on top of a baseline (day-ahead: Solcast P50,
+    nowcast: day-ahead value) instead of absolute watts. Trees cannot
+    extrapolate; a residual keeps the baseline's shape and falls back to it
+    naturally.
+  - The day-ahead model learns once per 30-min slot on the slot-MEAN actual
+    power (SlotAccumulator) -- the same quantity Solcast forecasts and EMHASS
+    consumes -- with solar geometry at the slot midpoint.
+  - A model is only used while its rolling MAE beats its baseline's rolling MAE
+    on the same samples, so the ML layer can never make the forecast worse than
+    raw Solcast for long.
+
 Input sources are independent of EMHASS: Solcast directly, never
 sensor.p_pv_forecast (that is EMHASS' own output and would become the ML
 curve itself once EMHASS receives it -> the model would learn from its own
@@ -23,6 +35,7 @@ prediction).
 """
 import logging
 import math
+import os
 import pickle
 from collections import deque
 from datetime import datetime, timedelta
@@ -30,7 +43,7 @@ from pathlib import Path
 
 import pandas as pd
 import pvlib
-from river import forest, metrics
+from river import forest, metrics, utils
 
 log = logging.getLogger("pv_model")
 
@@ -44,14 +57,16 @@ ENTITY_OUTPUT_CORRECTED = "sensor.pv_ml_corrected_forecast"               # curr
 ENTITY_OUTPUT_CURVE = "sensor.pv_ml_corrected_forecast_curve"             # 48 x 30 min, read by the EMHASS rest_commands
 # -----------------------------------------------------------------------------
 
-DAYAHEAD_MODEL_PATH = Path("/data/pv_dayahead_model.pkl")
-NOWCAST_MODEL_PATH = Path("/data/pv_nowcast_model.pkl")
+# v2: residual target + slot-mean training; v1 pickles are incompatible
+DAYAHEAD_MODEL_PATH = Path("/data/pv_dayahead_model_v2.pkl")
+NOWCAST_MODEL_PATH = Path("/data/pv_nowcast_model_v2.pkl")
 
 LATITUDE = 48.2
 LONGITUDE = 16.1
 TZ = "Europe/Vienna"
 
 SLOT = timedelta(minutes=30)
+SLOT_MID = SLOT / 2            # solar geometry at the slot midpoint (Solcast value = slot mean)
 HORIZON_SLOTS = 48
 KW_TO_W = 1000.0               # Solcast pv_estimate is kW (sum over a day = 2 x daily kWh, checked 14.10.2026)
 PLAUSIBLE_MAX_W = 15000
@@ -60,8 +75,12 @@ NOWCAST_TAU_H = 1.0            # nowcast influence decays with exp(-dt/tau)
 NOWCAST_FACTOR_BOUNDS = (0.1, 2.0)
 NOWCAST_MIN_BASE_W = 100.0     # below this the ratio nowcast/day-ahead is meaningless
 CSI_WINDOW = 6                 # cycles for the variability feature (6 x 5 min = 30 min)
-MIN_SAMPLES_DAYAHEAD = 300     # ~2-3 days of daytime 5-min samples before the model replaces raw Solcast
-MIN_SAMPLES_NOWCAST = 150      # ~1-2 days before the Ecowitt nowcast is allowed to correct
+MIN_SAMPLES_DAYAHEAD = 60      # slots (~3-4 days of daylight) before the model may replace raw Solcast
+MIN_SAMPLES_NOWCAST = 150      # 5-min samples (~1-2 days) before the Ecowitt nowcast is allowed to correct
+ROLLING_DAYAHEAD = 300         # slots (~2 weeks) for the model-vs-Solcast comparison
+ROLLING_NOWCAST = 600          # 5-min samples (~4-5 days) for the nowcast-vs-day-ahead comparison
+MIN_SLOT_COVERAGE = 0.6        # share of a slot that must have actual readings to learn on it
+CSI_MAX_GAP = timedelta(minutes=20)  # older CSI history (e.g. yesterday evening) is dropped
 
 _LOCATION = pvlib.location.Location(latitude=LATITUDE, longitude=LONGITUDE, tz=TZ)
 
@@ -137,16 +156,24 @@ def dayahead_features(ts, p50, p10, p90, clear_sky_ghi, elevation):
 
 
 # --- Models ------------------------------------------------------------------
-class _PickledRegressor:
-    """River's ARFRegressor returns 0.0 (not None) before it has learned
-    anything. predict() therefore returns None until `min_samples` daytime
-    samples were learned, so callers can fall back instead of sending 0 W."""
+def _clip_w(y):
+    return min(max(y, 0.0), PLAUSIBLE_MAX_W)
 
-    def __init__(self, path, n_models, min_samples):
+
+class _ResidualRegressor:
+    """ARFRegressor on the residual y - base.
+
+    predict() returns None -- so callers keep the baseline -- until `min_samples`
+    were learned and while the rolling MAE of the model is not lower than the
+    rolling MAE of the baseline on the same (prequential) samples."""
+
+    def __init__(self, path, n_models, min_samples, window):
         self.path = path
         self.min_samples = min_samples
         self.model = forest.ARFRegressor(n_models=n_models, seed=42)
         self.mae = metrics.MAE()
+        self.mae_rolling = utils.Rolling(metrics.MAE(), window_size=window)
+        self.mae_base_rolling = utils.Rolling(metrics.MAE(), window_size=window)
         self.n_learned = 0
         if path.exists():
             try:
@@ -154,52 +181,83 @@ class _PickledRegressor:
                     state = pickle.load(f)
                 self.model = state["model"]
                 self.mae = state["mae"]
+                self.mae_rolling = state["mae_rolling"]
+                self.mae_base_rolling = state["mae_base_rolling"]
                 self.n_learned = state.get("n_learned", 0)
-                log.info("%s loaded, MAE %.1f W, %d samples", path.name, self.mae.get(), self.n_learned)
+                log.info("%s loaded, rolling MAE %.1f W (baseline %.1f W), %d samples",
+                         path.name, self.mae_rolling.get(), self.mae_base_rolling.get(), self.n_learned)
             except Exception:
                 log.exception("Could not load %s, starting fresh", path)
 
     def save(self):
+        """Atomic write: a crash mid-dump must not destroy the learned model."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with open(self.path, "wb") as f:
-            pickle.dump({"model": self.model, "mae": self.mae, "n_learned": self.n_learned}, f)
+        tmp = self.path.with_suffix(".tmp")
+        with open(tmp, "wb") as f:
+            pickle.dump({"model": self.model, "mae": self.mae, "mae_rolling": self.mae_rolling,
+                         "mae_base_rolling": self.mae_base_rolling, "n_learned": self.n_learned}, f)
+        os.replace(tmp, self.path)
 
-    def predict(self, x):
-        if self.n_learned < self.min_samples:
-            return None
-        y = self.model.predict_one(x)
-        return None if y is None else min(max(y, 0.0), PLAUSIBLE_MAX_W)
+    @property
+    def active(self):
+        return (self.n_learned >= self.min_samples
+                and self.mae_rolling.get() < self.mae_base_rolling.get())
 
-    def learn(self, x, y):
-        y_pred = self.model.predict_one(x)
-        if y_pred is not None:
+    def _raw(self, x, base):
+        return _clip_w(base + (self.model.predict_one(x) or 0.0))
+
+    def predict(self, x, base):
+        return self._raw(x, base) if self.active else None
+
+    def learn(self, x, y, base):
+        if self.n_learned > 0:
+            y_pred = self._raw(x, base)
             self.mae.update(y, y_pred)
-        self.model.learn_one(x, y)
+            self.mae_rolling.update(y, y_pred)
+            self.mae_base_rolling.update(y, base)
+        self.model.learn_one(x, y - base)
         self.n_learned += 1
 
     @property
     def current_mae(self):
-        return self.mae.get()
+        return self.mae_rolling.get()
+
+    @property
+    def baseline_mae(self):
+        return self.mae_base_rolling.get()
 
 
-class DayAheadModel(_PickledRegressor):
+class DayAheadModel(_ResidualRegressor):
+    """Baseline = Solcast P50 of the slot."""
+
     def __init__(self):
-        super().__init__(DAYAHEAD_MODEL_PATH, n_models=10, min_samples=MIN_SAMPLES_DAYAHEAD)
+        super().__init__(DAYAHEAD_MODEL_PATH, n_models=10, min_samples=MIN_SAMPLES_DAYAHEAD,
+                         window=ROLLING_DAYAHEAD)
 
     def predict_or_solcast(self, x):
-        """Fallback to raw Solcast P50 while the model has not learned yet."""
+        """Fallback to raw Solcast P50 while the model is not (yet) better."""
         if x["elevation"] <= 0:
             return 0.0
-        y = self.predict(x)
+        y = self.predict(x, x["solcast_p50"])
         return x["solcast_p50"] if y is None else y
 
+    def learn_slot(self, x, y_mean):
+        self.learn(x, y_mean, x["solcast_p50"])
 
-class NowcastModel(_PickledRegressor):
+
+class NowcastModel(_ResidualRegressor):
+    """Baseline = day-ahead value of the current slot."""
+
     def __init__(self):
-        super().__init__(NOWCAST_MODEL_PATH, n_models=5, min_samples=MIN_SAMPLES_NOWCAST)
+        super().__init__(NOWCAST_MODEL_PATH, n_models=5, min_samples=MIN_SAMPLES_NOWCAST,
+                         window=ROLLING_NOWCAST)
         self.csi_history = deque(maxlen=CSI_WINDOW)
+        self._csi_last_ts = None
 
-    def features(self, dayahead_now, irradiance, clear_sky_ghi, elevation):
+    def features(self, now, dayahead_now, irradiance, clear_sky_ghi, elevation):
+        if self._csi_last_ts is not None and now - self._csi_last_ts > CSI_MAX_GAP:
+            self.csi_history.clear()
+        self._csi_last_ts = now
         csi = min(irradiance / max(clear_sky_ghi, 1.0), 1.5)
         self.csi_history.append(csi)
         hist = list(self.csi_history)
@@ -213,6 +271,34 @@ class NowcastModel(_PickledRegressor):
             "csi_std_30min": std,   # high = broken clouds
             "elevation": elevation,
         }
+
+
+class SlotAccumulator:
+    """Averages the actual readings over one Solcast slot. The day-ahead model
+    then learns ONCE per slot on the slot mean -- the quantity Solcast forecasts
+    and EMHASS consumes -- instead of six noisy instantaneous samples that all
+    share identical features (which over-weighted noise six-fold)."""
+
+    def __init__(self, min_readings):
+        self.min_readings = min_readings
+        self.start = None
+        self.x = None
+        self.total = 0.0
+        self.n = 0
+
+    def add(self, start, x, actual):
+        """Record one reading for slot `start`. Returns (x, mean_actual) of the
+        previous slot once it is complete and covered well enough, else None."""
+        done = None
+        if start != self.start:
+            if self.start is not None and self.n >= self.min_readings:
+                done = (self.x, self.total / self.n)
+            self.start, self.total, self.n = start, 0.0, 0
+        self.x = x  # latest Solcast values for this slot
+        if actual is not None:
+            self.total += actual
+            self.n += 1
+        return done
 
 
 def nowcast_factor(nowcast_now, dayahead_now):
