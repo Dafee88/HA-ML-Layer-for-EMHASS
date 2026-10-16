@@ -43,7 +43,7 @@ from pathlib import Path
 
 import pandas as pd
 import pvlib
-from river import forest, metrics, utils
+from river import forest, metrics, preprocessing, utils
 
 log = logging.getLogger("pv_model")
 
@@ -57,9 +57,9 @@ ENTITY_OUTPUT_CORRECTED = "sensor.pv_ml_corrected_forecast"               # curr
 ENTITY_OUTPUT_CURVE = "sensor.pv_ml_corrected_forecast_curve"             # 48 x 30 min, read by the EMHASS rest_commands
 # -----------------------------------------------------------------------------
 
-# v2: residual target + slot-mean training; v1 pickles are incompatible
-DAYAHEAD_MODEL_PATH = Path("/data/pv_dayahead_model_v2.pkl")
-NOWCAST_MODEL_PATH = Path("/data/pv_nowcast_model_v2.pkl")
+# v3: residual target + slot-mean training + scaled features; older pickles are incompatible
+DAYAHEAD_MODEL_PATH = Path("/data/pv_dayahead_model_v3.pkl")
+NOWCAST_MODEL_PATH = Path("/data/pv_nowcast_model_v3.pkl")
 
 LATITUDE = 48.2
 LONGITUDE = 16.1
@@ -170,7 +170,11 @@ class _ResidualRegressor:
     def __init__(self, path, n_models, min_samples, window):
         self.path = path
         self.min_samples = min_samples
-        self.model = forest.ARFRegressor(n_models=n_models, seed=42)
+        # StandardScaler is required: ARFRegressor's default leaf_prediction
+        # "adaptive" fits linear models in the leaves, and on unscaled watt-range
+        # features they diverge (live 16.10.2026: single predictions of several
+        # MW, all-time MAE ~50 kW on a 6.56 kWp plant; reproduced offline).
+        self.model = preprocessing.StandardScaler() | forest.ARFRegressor(n_models=n_models, seed=42)
         self.mae = metrics.MAE()
         self.mae_rolling = utils.Rolling(metrics.MAE(), window_size=window)
         self.mae_base_rolling = utils.Rolling(metrics.MAE(), window_size=window)
