@@ -1,4 +1,4 @@
-"""Building thermal model (ha-ml-layer) - added 28.09.2026.
+"""Building thermal model (ha-ml-layer).
 
 Learns per floor, from real measurements only (no assumed values):
   - cooling_constant k [1/h]: Newton cooling, heating OFF
@@ -6,11 +6,11 @@ Learns per floor, from real measurements only (no assumed values):
   - heating_rate h [K/h]: extra warming while heating is ON
         dT/dt = h - k * (T_in - T_out)
 
-Floors (User, 28.09.2026):
-  downstairs: sensor.eve_room_e9ff_temperature (Eve Kitchen), heating ON = switch.shelly1pmminig3_5432044e9dfc 'on'
-  upstairs:   sensor.eve_room_e49e_temperature (Eve Hall), heating ON = input_select.heating_stage 'upstairs'
-              or Tado hvac_action 'heating' (if the Tado entity exposes it)
-Outdoor: Ecowitt primary, Vitocal MQTT fallback.
+Floors, sensors and the optional heating-stage selector come from the add-on
+options. Heating counts as ON when the floor's heating_switch is 'on', or -
+for a floor with a climate entity - when its hvac_action is 'heating' or the
+heating-stage selector's state equals the floor name. Outdoor temperature:
+main sensor, optional fallback.
 
 Robustness:
   - learns only over a >= 60 min window with an unchanged heating state

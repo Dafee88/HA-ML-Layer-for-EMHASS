@@ -3,7 +3,7 @@
 Purpose: keep the data a real backtest needs, which Home Assistant's recorder
 does not keep (Solcast's 30-min curves are not recorded):
   - ml_layer_pv           every cycle: Solcast P50/P10/P90 of the current slot,
-                          model values, actual power, Ecowitt, MAE
+                          model values, actual power, irradiance, MAE
   - ml_layer_pv_slot      once per finished 30-min slot: mean actual power and
                           the Solcast values the day-ahead model learned on
   - ml_layer_dayahead     once per day (evening): tomorrow's 48 Solcast slots

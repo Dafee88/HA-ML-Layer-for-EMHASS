@@ -95,7 +95,7 @@ def pv_cycle(ha, cfg, dayahead, nowcast, slot_acc, log, influx=None, snapshot=No
 
     dayahead_now = dayahead.predict_or_solcast(x_now)
 
-    # --- nowcast (only with live Ecowitt data) ---
+    # --- nowcast (only with a live irradiance sensor) ---
     nowcast_now = None
     x_nc = None
     if irradiance is not None and irradiance >= 0 and elev_now > 0:
@@ -138,7 +138,7 @@ def pv_cycle(ha, cfg, dayahead, nowcast, slot_acc, log, influx=None, snapshot=No
         attributes={
             "unit_of_measurement": "W",
             "device_class": "power",
-            "friendly_name": "PV Forecast (ML-korrigiert)",
+            "friendly_name": "PV Forecast (ML corrected)",
             "current_mae_w": round(nowcast.current_mae if nowcast.active else dayahead.current_mae, 1),
             "mae_dayahead_w": round(dayahead.current_mae, 1),
             "mae_solcast_w": round(dayahead.baseline_mae, 1),
@@ -152,8 +152,8 @@ def pv_cycle(ha, cfg, dayahead, nowcast, slot_acc, log, influx=None, snapshot=No
             "solcast_p50_now_w": round(x_now["solcast_p50"], 1),
             "nowcast_factor": round(factor, 3),
             "actual_source": actual_source,
-            "ecowitt_irradiance_w_m2": round(irradiance, 1) if irradiance is not None else None,
-            "source": "ha-ml-layer / day-ahead (Solcast-only) + Ecowitt nowcast",
+            "irradiance_w_m2": round(irradiance, 1) if irradiance is not None else None,
+            "source": "ha-ml-layer / day-ahead (Solcast) + irradiance nowcast",
         },
     )
 
@@ -166,13 +166,13 @@ def pv_cycle(ha, cfg, dayahead, nowcast, slot_acc, log, influx=None, snapshot=No
         attributes={
             "unit_of_measurement": "W",
             "device_class": "power",
-            "friendly_name": "PV Forecast Curve (ML-korrigiert)",
+            "friendly_name": "PV Forecast Curve (ML corrected)",
             "forecasts": [
                 {"date": s.isoformat(), "p_pv_forecast": round(v, 1)}
                 for s, v in zip(starts, curve)
             ],
             "nowcast_factor": round(factor, 3),
-            "source": "ha-ml-layer / day-ahead (Solcast-only) + Ecowitt nowcast",
+            "source": "ha-ml-layer / day-ahead (Solcast) + irradiance nowcast",
         },
     )
 
@@ -240,8 +240,16 @@ def run():
         log.info("All models disabled (add-on option), exiting.")
         return
 
-    set_location(cfg.latitude, cfg.longitude, cfg.timezone)
     ha = HAClient(cfg.ha_url, cfg.token)
+    if None in (cfg.latitude, cfg.longitude, cfg.timezone):
+        while True:
+            try:
+                cfg.resolve_site(ha.get_config())
+                break
+            except Exception as exc:
+                log.warning("Could not read location from Home Assistant (%s), retrying in 60 s", exc)
+                time.sleep(60)
+    set_location(cfg.latitude, cfg.longitude, cfg.timezone)
     dayahead = DayAheadModel() if cfg.pv_enabled else None
     nowcast = NowcastModel() if cfg.pv_enabled else None
     slot_acc = SlotAccumulator(

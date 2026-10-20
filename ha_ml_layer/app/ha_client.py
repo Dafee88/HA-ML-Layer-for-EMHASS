@@ -24,6 +24,12 @@ class HAClient:
         r.raise_for_status()
         return r.json()
 
+    def get_config(self) -> dict:
+        """Core configuration (latitude, longitude, time_zone, ...)."""
+        r = requests.get(f"{self.base_url}/api/config", headers=self.headers, timeout=10)
+        r.raise_for_status()
+        return r.json()
+
     def get_states(self, entity_ids: list[str]) -> dict[str, dict]:
         result = {}
         for eid in entity_ids:

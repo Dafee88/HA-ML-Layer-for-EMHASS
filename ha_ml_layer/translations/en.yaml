@@ -16,13 +16,13 @@ configuration:
     description: Learn cooling and heating rates per floor (sensor.building_thermal_<floor>).
   latitude:
     name: Latitude
-    description: Site latitude in degrees, used for sun position and clear-sky irradiance.
+    description: Optional. Site latitude in degrees for sun position and clear-sky irradiance. Empty = location from the Home Assistant configuration.
   longitude:
     name: Longitude
-    description: Site longitude in degrees.
+    description: Optional. Site longitude in degrees. Empty = location from the Home Assistant configuration.
   timezone:
     name: Time zone
-    description: IANA time zone of the site, e.g. Europe/Vienna.
+    description: Optional. IANA time zone, e.g. Europe/Berlin. Empty = time zone of Home Assistant.
   pv_solcast_today:
     name: Solcast forecast today
     description: Solcast sensor with the detailedForecast attribute for today.
@@ -31,7 +31,7 @@ configuration:
     description: Solcast sensor with the detailedForecast attribute for tomorrow.
   pv_actual_power:
     name: Actual PV power (W)
-    description: Sensor with the current total PV power in watts. The models learn from it.
+    description: Sensor with the current total PV power in watts, e.g. from your inverter. The models learn from it.
   pv_actual_power_fallback:
     name: Actual PV power fallback (W)
     description: Optional. Used when the main PV power sensor is unavailable.
@@ -40,7 +40,7 @@ configuration:
     description: Optional weather station sensor. Enables the short-term nowcast and the sun filter of the thermal model.
   thermal_outdoor_temp:
     name: Outdoor temperature
-    description: Outdoor temperature sensor for the thermal model.
+    description: Outdoor temperature sensor (°C) for the thermal model.
   thermal_outdoor_temp_fallback:
     name: Outdoor temperature fallback
     description: Optional. Used when the main outdoor sensor is unavailable.

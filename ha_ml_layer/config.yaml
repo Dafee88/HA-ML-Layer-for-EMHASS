@@ -1,5 +1,5 @@
 name: "HA ML Layer for EMHASS"
-version: "0.3.2"
+version: "0.4.0"
 slug: "ha_ml_layer"
 description: "Online-Learning-Schicht (River) für EMHASS: PV-Prognose-Korrektur und Gebäude-Wärmemodell"
 url: "https://github.com/Dafee88/HA-ML-Layer-for-EMHASS"
@@ -17,23 +17,14 @@ options:
   log_level: "info"
   pv_enabled: true
   thermal_enabled: false
-  latitude: 48.2
-  longitude: 16.1
-  timezone: "Europe/Vienna"
   pv_solcast_today: "sensor.solcast_pv_forecast_forecast_today"
   pv_solcast_tomorrow: "sensor.solcast_pv_forecast_forecast_tomorrow"
-  pv_actual_power: "sensor.goodwe_pv_power_effective"
-  pv_actual_power_fallback: "sensor.pv_power"
-  pv_irradiance: "sensor.ecowitt_solar_radiation_1f335"
-  thermal_outdoor_temp: "sensor.ecowitt_outdoor_temp_1f335"
-  thermal_outdoor_temp_fallback: "sensor.vitocal_outdoor_temperature"
+  pv_actual_power: "sensor.power_photovoltaics"
+  thermal_outdoor_temp: "sensor.outdoor_temperature"
   thermal_floors:
-    - name: "downstairs"
-      temperature_sensor: "sensor.eve_room_e9ff_temperature"
-      heating_switch: "switch.shelly1pmminig3_5432044e9dfc"
-    - name: "upstairs"
-      temperature_sensor: "sensor.eve_room_e49e_temperature"
-      climate: "climate.smart_thermostat_x_2"
+    - name: "ground_floor"
+      temperature_sensor: "sensor.ground_floor_temperature"
+      heating_switch: "switch.ground_floor_heating"
   influxdb_enabled: false
   influxdb_host: "a0d7b954-influxdb"
   influxdb_port: 8086
@@ -46,9 +37,9 @@ schema:
   log_level: list(debug|info|warning|error)
   pv_enabled: bool
   thermal_enabled: bool
-  latitude: float(-90,90)
-  longitude: float(-180,180)
-  timezone: str
+  latitude: float(-90,90)?
+  longitude: float(-180,180)?
+  timezone: str?
   pv_solcast_today: str
   pv_solcast_tomorrow: str
   pv_actual_power: str

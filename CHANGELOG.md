@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.4.0 — 2026-10-20
+
+Für jede Anlage nutzbar: keine anlagenspezifischen Werte mehr im Repo.
+
+- Vorbelegte Sensoren sind neutrale Beispielnamen (Muster wie bei EMHASS:
+  `sensor.power_photovoltaics`, `sensor.outdoor_temperature`, eine Beispiel-Etage
+  `ground_floor`). Bestehende, gespeicherte Konfigurationen bleiben unverändert.
+- `latitude`, `longitude`, `timezone` sind optional; leer = Werte aus der
+  Home-Assistant-Konfiguration (`/api/config`).
+- Einstrahlungs- und Fallback-Sensoren sind standardmäßig leer (optional).
+- Sensor-Attribut `ecowitt_irradiance_w_m2` heißt jetzt `irradiance_w_m2`;
+  Anzeigenamen der Ausgabe-Sensoren auf Englisch.
+- Icon wieder nur das Hirn-Symbol; das Logo mit Schrift bleibt auf der Add-on-Seite.
+
 ## 0.3.2 — 2026-10-20
 - Add-on heißt jetzt „HA ML Layer for EMHASS“.
 - Neues Icon: Schriftzug mit Hirn-Symbol (Quelle `assets/icon.svg`).
@@ -56,5 +70,5 @@ PV-Modelle lernen nach dem Update neu (Modelldateien `*_v3.pkl`).
 
 ## 0.1.0
 
-- Erste Version: PV-Korrektur (Day-Ahead + Ecowitt-Nowcast) mit River und
+- Erste Version: PV-Korrektur (Day-Ahead + Einstrahlungs-Nowcast) mit River und
   Gebäude-Wärmemodell (Newton-Abkühlung).

@@ -6,12 +6,12 @@ Two models, rebuilt 14.10.2026:
    Uses ONLY features that also exist for future time steps: Solcast P50/P10/P90,
    clear-sky GHI, solar elevation and cyclic time. Training and forecast use the
    SAME feature builder, so the curve sent to EMHASS is computed exactly the way
-   the model was trained. (Before: training saw live Ecowitt cloud data, the
+   the model was trained. (Before: training saw live weather-station data, the
    forecast path always assumed a clear sky -> systematic over-forecast on
    cloudy afternoons.)
 
 2. Nowcast model (NowcastModel)
-   Corrects only the CURRENT value with live Ecowitt irradiance (clear-sky index
+   Corrects only the CURRENT value with live measured irradiance (clear-sky index
    and its short-term variability). Its effect on the curve fades out over the
    next ~2 hours (smart persistence), because a sensor cannot see clouds that
    have not arrived yet.
@@ -68,13 +68,13 @@ NOWCAST_FACTOR_BOUNDS = (0.1, 2.0)
 NOWCAST_MIN_BASE_W = 100.0     # below this the ratio nowcast/day-ahead is meaningless
 CSI_WINDOW = 6                 # cycles for the variability feature (6 x 5 min = 30 min)
 MIN_SAMPLES_DAYAHEAD = 60      # slots (~3-4 days of daylight) before the model may replace raw Solcast
-MIN_SAMPLES_NOWCAST = 150      # 5-min samples (~1-2 days) before the Ecowitt nowcast is allowed to correct
+MIN_SAMPLES_NOWCAST = 150      # 5-min samples (~1-2 days) before the irradiance nowcast is allowed to correct
 ROLLING_DAYAHEAD = 300         # slots (~2 weeks) for the model-vs-Solcast comparison
 ROLLING_NOWCAST = 600          # 5-min samples (~4-5 days) for the nowcast-vs-day-ahead comparison
 MIN_SLOT_COVERAGE = 0.6        # share of a slot that must have actual readings to learn on it
 CSI_MAX_GAP = timedelta(minutes=20)  # older CSI history (e.g. yesterday evening) is dropped
 
-_LOCATION = pvlib.location.Location(latitude=48.2, longitude=16.1, tz="Europe/Vienna")
+_LOCATION = None  # set by set_location() at start-up
 
 
 def set_location(latitude, longitude, tz):
@@ -170,8 +170,8 @@ class _ResidualRegressor:
         self.min_samples = min_samples
         # StandardScaler is required: ARFRegressor's default leaf_prediction
         # "adaptive" fits linear models in the leaves, and on unscaled watt-range
-        # features they diverge (live 16.10.2026: single predictions of several
-        # MW, all-time MAE ~50 kW on a 6.56 kWp plant; reproduced offline).
+        # features they diverge (seen live: single predictions of several MW;
+        # reproduced offline).
         self.model = preprocessing.StandardScaler() | forest.ARFRegressor(n_models=n_models, seed=42)
         self.mae = metrics.MAE()
         self.mae_rolling = utils.Rolling(metrics.MAE(), window_size=window)
