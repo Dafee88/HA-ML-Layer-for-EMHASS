@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 200" width="500" height="200"><g transform="scale(0.82) translate(-20,-10)">
+  <defs>
+    <linearGradient id="g" x1="0" y1="1" x2="1" y2="0">
+      <stop offset="0" stop-color="#1E88E5"/>
+      <stop offset="1" stop-color="#43A047"/>
+    </linearGradient>
+  </defs>
+  <g fill="none" stroke="url(#g)" stroke-linecap="round" stroke-linejoin="round">
+    <path stroke-width="12" d="M70 152 C38 150 30 114 50 98 C42 68 70 46 96 56 C106 34 142 30 160 48 C182 38 212 52 212 80 C234 90 238 122 220 138 C224 160 202 178 180 172 C170 177 160 178 150 174 C130 182 108 178 100 166 C88 174 72 168 70 152 Z"/>
+    <path stroke-width="12" d="M166 177 L174 204"/>
+    <path stroke-width="7" d="M82 112 L112 84 L152 74 L186 98 L194 136 L150 148 L114 136 Z M112 84 L114 136 M186 98 L150 148"/>
+  </g>
+  <g fill="url(#g)">
+    <circle cx="82" cy="112" r="10"/><circle cx="112" cy="84" r="10"/><circle cx="152" cy="74" r="10"/>
+    <circle cx="186" cy="98" r="10"/><circle cx="194" cy="136" r="10"/><circle cx="150" cy="148" r="10"/>
+    <circle cx="114" cy="136" r="10"/>
+    <path d="M150 88 L124 118 L142 118 L134 140 L164 106 L146 106 Z" stroke="url(#g)" stroke-width="3" stroke-linejoin="round"/>
+  </g>
+</g>
+<text x="190" y="98" font-family="Inter" font-weight="700" font-size="44" fill="url(#g)">HA ML Layer</text>
+<text x="192" y="140" font-family="Inter" font-weight="600" font-size="26" fill="#4F86B8" letter-spacing="1">for EMHASS</text></svg>
