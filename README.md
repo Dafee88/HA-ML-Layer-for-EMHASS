@@ -1,4 +1,6 @@
-# HA ML Layer für EMHASS (Version 0.2.0)
+<p align="center"><img src="assets/logo.png" alt="HA ML Layer for EMHASS" width="500"></p>
+
+# HA ML Layer für EMHASS
 
 Home-Assistant-Add-on mit einer Online-Learning-Schicht (River) für das
 Energiemanagement mit EMHASS. Es läuft als eigener Docker-Dienst, fragt

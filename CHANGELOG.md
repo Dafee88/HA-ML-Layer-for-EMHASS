@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.1 — 2026-10-20
+- Icon (`icon.png`, 128 × 128) und Logo (`logo.png`, 250 × 100) für den
+  Add-on-Store; Logo auch oben in der README. Quellen in `assets/`.
+
 ## 0.3.0 — 2026-10-20
 
 ### Konfiguration
