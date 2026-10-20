@@ -95,6 +95,17 @@ def solar_geometry(timestamps):
     return list(clearsky["ghi"].values), list(solpos["apparent_elevation"].values)
 
 
+def solar_position(timestamps):
+    """Like solar_geometry, plus the solar azimuth (degrees from north)."""
+    times = pd.DatetimeIndex(timestamps)
+    if times.tz is None:
+        times = times.tz_localize("UTC")
+    clearsky = _LOCATION.get_clearsky(times, model="ineichen")
+    solpos = _LOCATION.get_solarposition(times)
+    return (list(clearsky["ghi"].values), list(solpos["apparent_elevation"].values),
+            list(solpos["azimuth"].values))
+
+
 def _time_features(ts):
     """Cyclic time features in UTC (no DST jumps). Day of year instead of
     month, fractional hour instead of integer hour (no saw-tooth)."""
