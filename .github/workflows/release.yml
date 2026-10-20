@@ -11,6 +11,7 @@ on:
     paths:
       - ha_ml_layer/config.yaml
       - ha_ml_layer/CHANGELOG.md
+      - .github/workflows/release.yml
   workflow_dispatch:
 
 permissions:
