@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.5.0 — 2026-10-20
+
+PV-Modelle lernen nach dem Update neu (Modelldateien `*_v4.pkl`).
+
+### Wetterstation
+- Anlagenmodell Einstrahlung → PV-Leistung (mit Sonnenazimut für mehrere
+  Dachrichtungen), gesperrt bis es einen einfachen W-pro-W/m²-Faktor schlägt.
+- Ersatz-Istwert bei Abregelung (`pv_curtailed_entity`): die Modelle lernen dann
+  die mögliche statt der abgeregelten Leistung.
+- Fallback: Slots ohne API-Daten werden aus der Station berechnet (Bewölkung jetzt
+  → typische Bewölkung der Uhrzeit). Kurve bleibt bei API-Ausfall vollständig.
+- Typische Bewölkung je Uhrzeit wird gelernt; optionaler Referenzsensor
+  (`pv_reference_irradiance`) für den Kalibrierfaktor.
+
+### Prognose
+- Zweite Prognose (z. B. Forecast.Solar) als Tageswerte im Day-Ahead-Modell,
+  mehrere Dachflächen per Komma.
+- Festes 48-Slot-Raster; fehlt der aktuelle Solcast-Slot, läuft der Zyklus weiter.
+- nMAE in % der Anlagenleistung (`pv_peak_power_kw`).
+- Neue Attribute und InfluxDB-Felder: `forecast_source`, `fallback_slots`,
+  `station_*`, `curtailed`, `learning_target`, `irradiance_vs_reference`, nMAE.
+
+Simulation (16 Tage, zwei Dachrichtungen, Sensor −18 %, Abregelung, 2 Tage API-Ausfall):
+Fehler 3 h voraus 208 W normal, 321 W im Ausfall (vorher keine Kurve);
+mit Abregelungs-Sensor 208 W statt 407 W.
+
 ## 0.4.0 — 2026-10-20
 
 Für jede Anlage nutzbar: keine anlagenspezifischen Werte mehr im Repo.

@@ -16,7 +16,7 @@ Two models, rebuilt 14.10.2026:
    next ~2 hours (smart persistence), because a sensor cannot see clouds that
    have not arrived yet.
 
-Learning scheme (rebuilt 15.10.2026, model files v3 since 16.10.2026):
+Learning scheme (model files v4):
   - Both models learn the RESIDUAL on top of a baseline (day-ahead: Solcast P50,
     nowcast: day-ahead value) instead of absolute watts. Trees cannot
     extrapolate; a residual keeps the baseline's shape and falls back to it
@@ -53,9 +53,9 @@ ENTITY_OUTPUT_CURVE = "sensor.pv_ml_corrected_forecast_curve"             # 48 x
 # Solcast detailedForecast: pv_estimate/10/90 in kW (30-min average power)
 # -----------------------------------------------------------------------------
 
-# v3: residual target + slot-mean training + scaled features; older pickles are incompatible
-DAYAHEAD_MODEL_PATH = Path("/data/pv_dayahead_model_v3.pkl")
-NOWCAST_MODEL_PATH = Path("/data/pv_nowcast_model_v3.pkl")
+# v4: + second forecast provider features; older pickles are incompatible
+DAYAHEAD_MODEL_PATH = Path("/data/pv_dayahead_model_v4.pkl")
+NOWCAST_MODEL_PATH = Path("/data/pv_nowcast_model_v4.pkl")
 
 SLOT = timedelta(minutes=30)
 SLOT_MID = SLOT / 2            # solar geometry at the slot midpoint (Solcast value = slot mean)
@@ -142,6 +142,15 @@ def parse_solcast(today_attr, tomorrow_attr):
     return rows
 
 
+def daily_kwh(rows, tz):
+    """Sum of the P50 slots per local date in kWh (30-min slots of W)."""
+    out = {}
+    for start, p50, _p10, _p90 in rows:
+        d = pd.Timestamp(start).tz_convert(tz).date()
+        out[d] = out.get(d, 0.0) + p50 * 0.5 / 1000.0
+    return out
+
+
 def current_slot_index(rows, now):
     """Index of the Solcast slot that contains `now`, or None."""
     for i, (start, *_rest) in enumerate(rows):
@@ -151,7 +160,10 @@ def current_slot_index(rows, now):
 
 
 # --- Day-ahead features (identical for training and forecast) ---------------
-def dayahead_features(ts, p50, p10, p90, clear_sky_ghi, elevation):
+def dayahead_features(ts, p50, p10, p90, clear_sky_ghi, elevation, day=None):
+    """`day`: optional daily context for the slot's local day, e.g.
+    {"solcast_day_kwh": .., "secondary_day_kwh": ..} (second forecast provider).
+    Missing keys are simply left out (River handles absent features)."""
     x = _time_features(ts)
     x["solcast_p50"] = p50
     x["solcast_p10"] = p10
@@ -161,6 +173,13 @@ def dayahead_features(ts, p50, p10, p90, clear_sky_ghi, elevation):
     x["elevation"] = elevation
     # scale-free: how much of the clear-sky potential Solcast expects
     x["solcast_vs_clearsky"] = p50 / max(clear_sky_ghi, 1.0)
+    if day:
+        sc, sec = day.get("solcast_day_kwh"), day.get("secondary_day_kwh")
+        if sec is not None:
+            x["secondary_day_kwh"] = sec
+            if sc:
+                # >1: the second provider expects a sunnier day than Solcast
+                x["secondary_vs_solcast"] = min(sec / sc, 5.0)
     return x
 
 

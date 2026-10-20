@@ -42,6 +42,20 @@ def _entity(opts, key, default, problems):
     return value
 
 
+def _entity_list(opts, key, problems):
+    """Comma-separated entity ids (e.g. one sensor per roof plane)."""
+    out = []
+    for part in (opts.get(key) or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if not _ENTITY_RE.match(part):
+            problems.append(f"{key}: '{part}' is not a valid entity id")
+            continue
+        out.append(part)
+    return out
+
+
 class Config:
     def __init__(self, opts=None):
         opts = load_options() if opts is None else opts
@@ -69,6 +83,13 @@ class Config:
         self.pv_actual_power = _entity(opts, "pv_actual_power", "sensor.power_photovoltaics", problems)
         self.pv_actual_power_fallback = _entity(opts, "pv_actual_power_fallback", "", problems)
         self.pv_irradiance = _entity(opts, "pv_irradiance", "", problems)
+
+        self.pv_secondary_today = _entity_list(opts, "pv_forecast_solar_today", problems)
+        self.pv_secondary_tomorrow = _entity_list(opts, "pv_forecast_solar_tomorrow", problems)
+        self.pv_curtailed = _entity(opts, "pv_curtailed_entity", "", problems)
+        self.pv_reference_irradiance = _entity(opts, "pv_reference_irradiance", "", problems)
+        kwp = opts.get("pv_peak_power_kw")
+        self.pv_peak_power_kw = float(kwp) if kwp not in (None, "") and float(kwp) > 0 else None
 
         # --- thermal sensors ---
         self.thermal_outdoor_temp = _entity(opts, "thermal_outdoor_temp", "sensor.outdoor_temperature", problems)

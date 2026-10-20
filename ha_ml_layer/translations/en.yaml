@@ -37,7 +37,22 @@ configuration:
     description: Optional. Used when the main PV power sensor is unavailable.
   pv_irradiance:
     name: Solar irradiance (W/m²)
-    description: Optional weather station sensor. Enables the short-term nowcast and the sun filter of the thermal model.
+    description: Optional local weather station sensor. Enables the real-time nowcast, the station plant model (stand-in for curtailed power) and the offline fallback when the forecast APIs have no data. Also the sun filter of the thermal model.
+  pv_forecast_solar_today:
+    name: Second forecast today (kWh)
+    description: Optional, e.g. Forecast.Solar "energy production today". Several sensors (one per roof plane) separated by commas are summed. Used as extra input for the day-ahead model.
+  pv_forecast_solar_tomorrow:
+    name: Second forecast tomorrow (kWh)
+    description: Optional, same as above for tomorrow (e.g. Forecast.Solar "energy production tomorrow").
+  pv_curtailed_entity:
+    name: Curtailment indicator
+    description: Optional binary_sensor or input_boolean that is 'on' while PV may be curtailed (full battery, export limit). Then the station's potential power is learned instead of the curtailed actual power.
+  pv_reference_irradiance:
+    name: Reference irradiance (W/m²)
+    description: Optional nearby professional station (e.g. GeoSphere/DWD integration). Only used to track the calibration factor of your own sensor (attribute irradiance_vs_reference).
+  pv_peak_power_kw:
+    name: PV peak power (kWp)
+    description: Optional. Used to report the error as nMAE in percent of the peak power.
   thermal_outdoor_temp:
     name: Outdoor temperature
     description: Outdoor temperature sensor (°C) for the thermal model.

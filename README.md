@@ -28,6 +28,10 @@ Voraussetzungen: die [Solcast-Integration](https://github.com/BJReplay/ha-solcas
 | `pv_solcast_today` / `pv_solcast_tomorrow` | `sensor.solcast_pv_forecast_forecast_today` / `_tomorrow` | Solcast `detailedForecast`: P50/P10/P90 in kW, 30-min-Mittelleistung |
 | `pv_actual_power` (optional `pv_actual_power_fallback`) | `sensor.power_photovoltaics` | Ist-Leistung in W |
 | `pv_irradiance` (optional) | `sensor.solar_radiation` | Einstrahlung in W/m², schaltet den Nowcast frei |
+| `pv_forecast_solar_today` / `_tomorrow` (optional) | `sensor.energy_production_today` | zweite Prognose als Tageswert in kWh (z. B. Forecast.Solar), mehrere Sensoren mit Komma = Summe der Dachflächen |
+| `pv_curtailed_entity` (optional) | `binary_sensor.pv_curtailed` | `on`, solange die PV abgeregelt sein kann (Akku voll, Einspeiselimit) |
+| `pv_reference_irradiance` (optional) | `sensor.reference_global_radiation` | professionelle Station in der Nähe, nur zur Kontrolle der Kalibrierung |
+| `pv_peak_power_kw` (optional) | `6.5` | Anlagenleistung für nMAE in % |
 
 Nicht als Eingang verwenden: `sensor.p_pv_forecast`. Das ist die Ausgabe von
 EMHASS selbst; sobald EMHASS die ML-Kurve bekommt, würde das Modell von seiner
@@ -46,6 +50,29 @@ bleiben sie leer, übernimmt das Add-on die Werte aus der Home-Assistant-Konfigu
    Einstrahlung (Clear-Sky-Index und seine Schwankung über 30 min).
    Seine Wirkung auf die Kurve klingt mit `exp(−Δt / 1 h)` ab, weil ein Sensor
    keine Wolken sieht, die noch nicht da sind.
+
+### Wetterstation (optional, `ha_ml_layer/app/ecowitt_model.py`)
+Mit `pv_irradiance` übernimmt eine lokale Wetterstation drei Aufgaben:
+
+1. **Anlagenmodell:** lernt, wie viel Watt die Anlage bei gemessener Einstrahlung,
+   Sonnenhöhe und Sonnenazimut liefert (der Azimut zählt bei Dachflächen in
+   verschiedenen Richtungen, weil der Sensor waagrecht misst). Basis ist ein
+   gelernter Faktor W pro W/m²; das ML-Modell darauf wird nur verwendet, solange
+   es diesen Faktor schlägt. Gelernt wird nur ohne Abregelung.
+2. **Ersatz-Istwert bei Abregelung:** Ist `pv_curtailed_entity` `on`, lernen die
+   Prognosemodelle aus der möglichen Leistung laut Station statt aus der
+   abgeregelten Leistung. Ohne diese Option lernt das Modell volle Akkus als
+   „schwache Sonne“ (Simulation: −1075 W Fehler an abgeregelten Nachmittagen).
+3. **Fallback:** Jeder 30-min-Slot ohne API-Daten (API offline, kein Internet)
+   wird aus der Station berechnet: Clear-Sky × Bewölkung, wobei die aktuell
+   gemessene Bewölkung über ~2 h in die typische Bewölkung dieser Uhrzeit
+   übergeht. Für die nächsten Stunden brauchbar, für den nächsten Tag nur ein
+   Notbehelf. Attribut `forecast_source`: `solcast`, `solcast+station` oder `station`.
+
+Der Sensor wird relativ genutzt (Clear-Sky-Index) und auf die Anlage gelernt;
+ein konstanter Messfehler (z. B. Lux-basierte Sensoren) stört daher kaum.
+Kann weder Solcast noch die Station einen Slot liefern, wird **keine** Kurve
+veröffentlicht – EMHASS nutzt dann nach einer Stunde seine eigene Prognose.
 
 ### Lernverfahren
 - **Residual statt Absolutwert:** Beide Modelle lernen `Ist − Basis`
@@ -73,12 +100,17 @@ bleiben sie leer, übernimmt das Add-on die Werte aus der Home-Assistant-Konfigu
 | `mae_nowcast_w` / `mae_nowcast_baseline_w` | dasselbe für den Nowcast gegen den Day-Ahead-Wert |
 | `samples_dayahead`, `samples_nowcast` | Anzahl gelernter Samples |
 | `dayahead_now_w`, `solcast_p50_now_w`, `nowcast_factor` | Zwischenwerte des aktuellen Zyklus |
+| `forecast_source`, `fallback_slots` | Herkunft der Kurve, Anzahl Slots aus der Station |
+| `nmae_dayahead_pct`, `nmae_solcast_pct` | MAE in % der Anlagenleistung (mit `pv_peak_power_kw`) |
+| `station_potential_w`, `station_ready`, `station_w_per_w_m2`, `station_plant_active` | Stand des Anlagenmodells |
+| `curtailed`, `learning_target` | Abregelung aktiv, Lernziel `actual` oder `station` |
+| `irradiance_vs_reference` | eigener Sensor ÷ Referenzstation (Kalibrierfaktor) |
 
 `sensor.pv_ml_corrected_forecast_curve`: Attribut `forecasts` mit 48 Einträgen
 `{"date": …, "p_pv_forecast": …}`. Diese Kurve lesen die EMHASS-`rest_command`s.
 
-Gelernte Modelle liegen in `/data/pv_dayahead_model_v3.pkl` und
-`/data/pv_nowcast_model_v3.pkl`.
+Gelernte Modelle liegen in `/data/pv_dayahead_model_v4.pkl` und
+`/data/pv_nowcast_model_v4.pkl`, die Station in `/data/pv_station_*`.
 
 ---
 
@@ -144,7 +176,7 @@ Eingaben (z. B. ungültige Entity-ID) stehen beim Start als `Configuration:` im 
 |---|---|
 | Allgemein | `poll_interval_seconds` (60–3600, empfohlen 300), `log_level`, `pv_enabled`, `thermal_enabled` |
 | Standort | optional `latitude`, `longitude`, `timezone` (leer = aus der Home-Assistant-Konfiguration) |
-| PV | `pv_solcast_today`, `pv_solcast_tomorrow` (Solcast-Sensoren mit `detailedForecast`), `pv_actual_power` (W), optional `pv_actual_power_fallback`, `pv_irradiance` (W/m², aktiviert den Nowcast) |
+| PV | `pv_solcast_today`, `pv_solcast_tomorrow` (Solcast-Sensoren mit `detailedForecast`), `pv_actual_power` (W), optional `pv_actual_power_fallback`, `pv_irradiance` (Wetterstation), `pv_forecast_solar_today`/`_tomorrow`, `pv_curtailed_entity`, `pv_reference_irradiance`, `pv_peak_power_kw` |
 | Wärmemodell | `thermal_outdoor_temp`, optional `thermal_outdoor_temp_fallback`, optional `thermal_heating_stage`, `thermal_floors` (pro Etage `name`, `temperature_sensor` und `heating_switch` oder `climate`) |
 | InfluxDB | `influxdb_enabled`, `influxdb_host` (InfluxDB-Add-on: `a0d7b954-influxdb`), `influxdb_port`, `influxdb_ssl`, `influxdb_database`, `influxdb_username`, `influxdb_password`, `influxdb_dayahead_snapshot_hour` |
 
@@ -177,9 +209,10 @@ Solcast unverändert durchgereicht, danach übernimmt das Modell, sobald
   Solcast-Wert eines Slots (Vorlauf fast 0 h), wird aber auf Werte mit bis zu
   24 h Vorlauf angewendet. Abhilfe: Feature-Snapshots zum Prognosezeitpunkt
   speichern und mit einem Feature `lead_h` lernen.
-- **Abregelung:** Bei voller Batterie, Einspeiselimit oder negativen Preisen
-  lernt das Modell die Abregelung als „schlechtes Wetter". Dafür fehlt noch
-  eine Entity mit dem Begrenzungsstatus des Wechselrichters.
+- **Abregelung:** braucht eine Entity, die die Abregelung anzeigt
+  (`pv_curtailed_entity`). Je genauer sie den Zeitraum trifft, desto besser.
+- **Zweite Prognose nur als Tageswert:** Forecast.Solar liefert in Home Assistant
+  keine 30-min-Kurve als Attribut; deshalb gehen Tagessummen als Merkmal ein.
 - **Wärmemodell:** Träge Heizungen wirken stundenlang nach. Besser wären
   2–3 h Sperrzeit nach dem Umschalten (z. B. bei Fußbodenheizung) und eine Regressionsgerade über das ganze
   Fenster statt zweier Endpunkte (Sensorauflösung 0,1 K).
