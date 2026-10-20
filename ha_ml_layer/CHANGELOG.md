@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.5.1 — 2026-10-20
+
+### Dokumentation
+- Add-on-Seite im Store (`README.md`) listet alle vorher zu installierenden
+  Integrationen und Add-ons mit Links (Pflicht und optional).
+- Neuer Tab „Documentation“ (`DOCS.md`): Voraussetzungen, Konfiguration,
+  Ausgaben, Beispiel-`rest_command` für EMHASS, Beispiel-Abregelungs-Sensor, InfluxDB.
+- README auf GitHub mit derselben Liste; Feldbeschreibungen nennen die
+  passenden Solcast- und Forecast.Solar-Sensoren.
+- Am Code hat sich nichts geändert.
+
 ## 0.5.0 — 2026-10-20
 
 PV-Modelle lernen nach dem Update neu (Modelldateien `*_v4.pkl`).

@@ -14,7 +14,30 @@ Enthalten sind zwei Modelle:
 | PV-Prognose-Korrektur (Day-Ahead + Nowcast) | `pv_enabled` | `sensor.pv_ml_corrected_forecast`, `sensor.pv_ml_corrected_forecast_curve` |
 | Gebäude-Wärmemodell (pro Etage) | `thermal_enabled` | `sensor.building_thermal_<etage>` |
 
-Voraussetzungen: die [Solcast-Integration](https://github.com/BJReplay/ha-solcast-solar) (liefert die 30-min-Kurve im Attribut `detailedForecast`) und ein Sensor für die aktuelle PV-Leistung in W. Optional: ein Einstrahlungssensor (W/m², z. B. Wetterstation), Raum- und Außentemperaturen für das Wärmemodell, InfluxDB 1.x.
+### Vorher installieren
+
+**Pflicht**
+
+| Was | Wofür | Link |
+|---|---|---|
+| Home Assistant OS oder Supervised | Add-ons brauchen den Supervisor | [Installation](https://www.home-assistant.io/installation/) |
+| HACS | für die Solcast-Integration | [hacs.xyz](https://hacs.xyz/) |
+| Solcast PV Forecast + kostenloses Solcast-Hobbyist-Konto | PV-Prognose mit 30-min-Kurve (`detailedForecast`) | [ha-solcast-solar](https://github.com/BJReplay/ha-solcast-solar), Konto: [solcast.com](https://solcast.com/) |
+| Sensor mit der aktuellen PV-Leistung in W | daraus lernen die Modelle | Integration des Wechselrichters |
+| EMHASS-Add-on | nutzt die korrigierte Kurve | [emhass-add-on](https://github.com/davidusb-geek/emhass-add-on), [Doku](https://emhass.readthedocs.io) |
+
+**Optional**
+
+| Was | Ermöglicht | Link |
+|---|---|---|
+| Wetterstation mit Strahlungssensor (W/m²), z. B. Ecowitt | Echtzeit-Abgleich, Ersatz-Istwert bei Abregelung, Offline-Fallback | [Ecowitt (Core)](https://www.home-assistant.io/integrations/ecowitt/) oder [Ecowitt Local (HACS)](https://github.com/alexlenk/ecowitt_local) |
+| Forecast.Solar | zweite Prognose als Modell-Eingang | [Forecast.Solar](https://www.home-assistant.io/integrations/forecast_solar/) |
+| InfluxDB-1.x-Add-on | speichert Prognosen und Ergebnisse für Backtests | [InfluxDB-Add-on](https://github.com/hassio-addons/addon-influxdb) |
+| Referenz-Station in der Nähe | prüft die Kalibrierung des eigenen Sensors | z. B. [GeoSphere Austria](https://www.home-assistant.io/integrations/zamg/) |
+| Template-Sensor für Abregelung | richtiges Lernen bei vollem Akku / Einspeiselimit | [Template](https://www.home-assistant.io/integrations/template/) |
+
+Einrichtung, EMHASS-`rest_command` und Beispiel für den Abregelungs-Sensor:
+[`ha_ml_layer/DOCS.md`](ha_ml_layer/DOCS.md) – in Home Assistant im Tab **Documentation** des Add-ons.
 
 Änderungen je Version: siehe [CHANGELOG.md](ha_ml_layer/CHANGELOG.md).
 

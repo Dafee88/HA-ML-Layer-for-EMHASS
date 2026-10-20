@@ -25,7 +25,7 @@ configuration:
     description: Optional. IANA time zone, e.g. Europe/Berlin. Empty = time zone of Home Assistant.
   pv_solcast_today:
     name: Solcast forecast today
-    description: Solcast sensor with the detailedForecast attribute for today.
+    description: Solcast sensor with the detailedForecast attribute for today (Solcast PV Forecast integration from HACS, "Forecast today").
   pv_solcast_tomorrow:
     name: Solcast forecast tomorrow
     description: Solcast sensor with the detailedForecast attribute for tomorrow.
@@ -40,10 +40,10 @@ configuration:
     description: Optional local weather station sensor. Enables the real-time nowcast, the station plant model (stand-in for curtailed power) and the offline fallback when the forecast APIs have no data. Also the sun filter of the thermal model.
   pv_forecast_solar_today:
     name: Second forecast today (kWh)
-    description: Optional, e.g. Forecast.Solar "energy production today". Several sensors (one per roof plane) separated by commas are summed. Used as extra input for the day-ahead model.
+    description: Optional, e.g. Forecast.Solar "Estimated energy production - today" (kWh). Forecast.Solar already combines several roof planes into one sensor; several sensors separated by commas are summed. Extra input for the day-ahead model.
   pv_forecast_solar_tomorrow:
     name: Second forecast tomorrow (kWh)
-    description: Optional, same as above for tomorrow (e.g. Forecast.Solar "energy production tomorrow").
+    description: Optional, same as above for tomorrow (e.g. Forecast.Solar "Estimated energy production - tomorrow").
   pv_curtailed_entity:
     name: Curtailment indicator
     description: Optional binary_sensor or input_boolean that is 'on' while PV may be curtailed (full battery, export limit). Then the station's potential power is learned instead of the curtailed actual power.
