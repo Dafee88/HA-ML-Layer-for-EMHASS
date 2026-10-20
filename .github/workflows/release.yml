@@ -21,7 +21,7 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -38,7 +38,7 @@ jobs:
               echo "v$v exists"; continue
             fi
             # commit that first set this version in config.yaml
-            sha=$(git log --reverse --format=%H -S "version: \"$v\"" -- '*config.yaml' | head -1)
+            sha=$(git log --reverse --format=%H -S "version: \"$v\"" -- '*config.yaml' | sed -n 1p)
             if [ -z "$sha" ]; then echo "no commit for $v, skipped"; continue; fi
             awk -v v="$v" '
               $0 ~ "^## "v"( |$)" {on=1; next}
