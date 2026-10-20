@@ -1,0 +1,50 @@
+name: Release
+
+# Creates a GitHub release (tag v<version>) for every version listed in
+# ha_ml_layer/CHANGELOG.md that has no release yet. The release notes are
+# that version's changelog section. Runs when config.yaml or the changelog
+# changes on main, or manually (Actions -> Release -> Run workflow).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ha_ml_layer/config.yaml
+      - ha_ml_layer/CHANGELOG.md
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create missing releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          current=$(sed -n 's/^version: "\(.*\)"/\1/p' ha_ml_layer/config.yaml)
+          echo "Current add-on version: $current"
+          for v in $(sed -n 's/^## \([0-9][0-9.]*\).*/\1/p' ha_ml_layer/CHANGELOG.md | tac); do
+            [ "$v" = "0.1.0" ] && continue
+            if gh release view "v$v" >/dev/null 2>&1; then
+              echo "v$v exists"; continue
+            fi
+            # commit that first set this version in config.yaml
+            sha=$(git log --reverse --format=%H -S "version: \"$v\"" -- '*config.yaml' | head -1)
+            if [ -z "$sha" ]; then echo "no commit for $v, skipped"; continue; fi
+            awk -v v="$v" '
+              $0 ~ "^## "v"( |$)" {on=1; next}
+              on && /^## / {exit}
+              on {print}
+            ' ha_ml_layer/CHANGELOG.md > notes.md
+            latest=false; [ "$v" = "$current" ] && latest=true
+            gh release create "v$v" --target "$sha" --title "v$v" --notes-file notes.md --latest=$latest
+            echo "created v$v at $sha"
+          done
