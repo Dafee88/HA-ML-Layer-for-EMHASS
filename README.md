@@ -103,14 +103,23 @@ ab 10 Abkühl- und 5 Heiz-Samples, vorher `learning`.
 
 ---
 
-## Installation
-1. Diesen Ordner nach `/addons/ha_ml_layer/` auf dem Home-Assistant-Host kopieren
-   (lokales Add-on-Repository).
-2. Einstellungen → Add-ons → Add-on-Store → oben rechts neu laden →
-   „HA ML Layer" erscheint unter „Lokale Add-ons".
-3. Bei einer anderen Anlage: Entity-IDs und Standort in `app/pv_model.py` und
-   `app/building_thermal.py` anpassen.
-4. Installieren, Modelle in den Optionen aktivieren, starten, Logs beobachten.
+## Installation und Updates (Add-on-Store)
+1. Einstellungen → Add-ons → Add-on-Store → ⋮ oben rechts → **Repositories**.
+2. `https://github.com/Dafee88/HA-ML-Layer-for-EMHASS` hinzufügen.
+3. Add-on **HA ML Layer** installieren. Es wird auf dem Gerät aus dem
+   `Dockerfile` gebaut (kein vorgefertigtes Image).
+4. Modelle in den Optionen aktivieren, starten, Logs beobachten.
+5. Bei einer anderen Anlage: Entity-IDs und Standort in
+   `ha_ml_layer/app/pv_model.py` und `ha_ml_layer/app/building_thermal.py` anpassen.
+
+Updates: Home Assistant zeigt ein Update an, sobald `version` in
+`ha_ml_layer/config.yaml` auf `main` erhöht wurde. Jede Code-Änderung braucht
+deshalb eine neue Versionsnummer, sonst kommt sie nicht an.
+
+Umstieg vom lokalen Add-on (`/addons/ha_ml_layer/`): Das Store-Add-on ist für
+Home Assistant ein eigenes Add-on mit eigenem `/data`. Lokales Add-on stoppen
+und deinstallieren, sonst schreiben beide dieselben Sensoren. Die Modelle
+lernen danach neu.
 
 ### Optionen
 | Option | Standard | Bedeutung |

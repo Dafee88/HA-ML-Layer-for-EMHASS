@@ -4,6 +4,10 @@
 
 PV-Modelle lernen nach dem Update neu (Modelldateien `*_v3.pkl`).
 
+### Verteilung
+- Repo ist jetzt ein Home-Assistant-Add-on-Repository (`repository.yaml`,
+  Add-on im Ordner `ha_ml_layer/`); Installation und Updates über den Add-on-Store.
+
 ### PV-Prognose
 - Modelle lernen das Residual auf Solcast bzw. den Day-Ahead-Wert statt
   absoluter Watt.
