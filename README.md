@@ -121,12 +121,34 @@ Home Assistant ein eigenes Add-on mit eigenem `/data`. Lokales Add-on stoppen
 und deinstallieren, sonst schreiben beide dieselben Sensoren. Die Modelle
 lernen danach neu.
 
-### Optionen
-| Option | Standard | Bedeutung |
+### Konfiguration (Tab „Konfiguration“ des Add-ons)
+Alle Sensoren werden im Formular eingetragen, nichts mehr im Code. Jedes Feld hat
+dort eine Beschreibung. Nach dem Speichern das Add-on neu starten. Fehlerhafte
+Eingaben (z. B. ungültige Entity-ID) stehen beim Start als `Configuration:` im Log.
+
+| Bereich | Optionen |
+|---|---|
+| Allgemein | `poll_interval_seconds` (60–3600, empfohlen 300), `log_level`, `pv_enabled`, `thermal_enabled` |
+| Standort | `latitude`, `longitude`, `timezone` (für Sonnenstand und Clear-Sky) |
+| PV | `pv_solcast_today`, `pv_solcast_tomorrow` (Solcast-Sensoren mit `detailedForecast`), `pv_actual_power` (W), optional `pv_actual_power_fallback`, `pv_irradiance` (W/m², aktiviert den Nowcast) |
+| Wärmemodell | `thermal_outdoor_temp`, optional `thermal_outdoor_temp_fallback`, optional `thermal_heating_stage`, `thermal_floors` (pro Etage `name`, `temperature_sensor` und `heating_switch` oder `climate`) |
+| InfluxDB | `influxdb_enabled`, `influxdb_host` (InfluxDB-Add-on: `a0d7b954-influxdb`), `influxdb_port`, `influxdb_ssl`, `influxdb_database`, `influxdb_username`, `influxdb_password`, `influxdb_dayahead_snapshot_hour` |
+
+Ausgabe-Sensoren sind fest, weil EMHASS sie liest: `sensor.pv_ml_corrected_forecast`,
+`sensor.pv_ml_corrected_forecast_curve`, `sensor.building_thermal_<etage>`.
+
+### InfluxDB (optional)
+Schreibt über die HTTP-Schnittstelle von InfluxDB 1.x in eine bestehende Datenbank:
+
+| Measurement | Wann | Inhalt |
 |---|---|---|
-| `poll_interval_seconds` | 300 | Abfrageintervall (60–3600 s) |
-| `log_level` | `info` | `debug` / `info` / `warning` / `error` |
-| `models` | PV an, Wärme aus | Modelle einzeln aktivieren |
+| `ml_layer_pv` | jeder Zyklus | Solcast P50/P10/P90 des aktuellen Slots, Day-Ahead-, Nowcast- und veröffentlichter Wert, Ist-Leistung, Einstrahlung, Clear-Sky, Sonnenhöhe, MAE, aktiv-Flags |
+| `ml_layer_pv_slot` | je fertigem 30-min-Slot | Mittel der Ist-Leistung und die Solcast-Werte, auf denen das Day-Ahead-Modell gelernt hat |
+| `ml_layer_dayahead` | einmal täglich ab `influxdb_dayahead_snapshot_hour` | die 48 Slots von morgen: Solcast P50/P10/P90 und ML-Kurve, Tag `issued` |
+
+Damit liegen die Daten für einen echten Backtest vor (der Home-Assistant-Recorder
+speichert die Solcast-Kurven nicht). Ein Schreibfehler hält das Add-on nicht an, er
+steht höchstens alle 10 Minuten einmal im Log.
 
 ### Update auf 0.2.0
 Die PV-Modelle lernen ab dem Update neu (`*_v3.pkl`). Alte `*.pkl` in `/data/`

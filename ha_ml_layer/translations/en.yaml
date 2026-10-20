@@ -1,0 +1,76 @@
+configuration:
+  ha_url:
+    name: Home Assistant URL
+    description: Leave as http://supervisor/core when running as an add-on.
+  poll_interval_seconds:
+    name: Poll interval (seconds)
+    description: How often sensors are read and the models learn. 300 is recommended.
+  log_level:
+    name: Log level
+    description: How much detail to write to the add-on log.
+  pv_enabled:
+    name: PV forecast correction
+    description: Correct the Solcast forecast and publish sensor.pv_ml_corrected_forecast and sensor.pv_ml_corrected_forecast_curve for EMHASS.
+  thermal_enabled:
+    name: Building thermal model
+    description: Learn cooling and heating rates per floor (sensor.building_thermal_<floor>).
+  latitude:
+    name: Latitude
+    description: Site latitude in degrees, used for sun position and clear-sky irradiance.
+  longitude:
+    name: Longitude
+    description: Site longitude in degrees.
+  timezone:
+    name: Time zone
+    description: IANA time zone of the site, e.g. Europe/Vienna.
+  pv_solcast_today:
+    name: Solcast forecast today
+    description: Solcast sensor with the detailedForecast attribute for today.
+  pv_solcast_tomorrow:
+    name: Solcast forecast tomorrow
+    description: Solcast sensor with the detailedForecast attribute for tomorrow.
+  pv_actual_power:
+    name: Actual PV power (W)
+    description: Sensor with the current total PV power in watts. The models learn from it.
+  pv_actual_power_fallback:
+    name: Actual PV power fallback (W)
+    description: Optional. Used when the main PV power sensor is unavailable.
+  pv_irradiance:
+    name: Solar irradiance (W/m²)
+    description: Optional weather station sensor. Enables the short-term nowcast and the sun filter of the thermal model.
+  thermal_outdoor_temp:
+    name: Outdoor temperature
+    description: Outdoor temperature sensor for the thermal model.
+  thermal_outdoor_temp_fallback:
+    name: Outdoor temperature fallback
+    description: Optional. Used when the main outdoor sensor is unavailable.
+  thermal_heating_stage:
+    name: Heating stage selector
+    description: Optional input_select; heating counts as on for a floor whose name equals its state. Leave empty if you have none.
+  thermal_floors:
+    name: Floors
+    description: One entry per floor - name (lower case), temperature_sensor, and either heating_switch (on/off) or climate (uses hvac_action).
+  influxdb_enabled:
+    name: Write to InfluxDB
+    description: Store every cycle, every finished 30-min slot and an evening snapshot of tomorrow's forecast. Needed for backtests.
+  influxdb_host:
+    name: InfluxDB host
+    description: Host name of the InfluxDB 1.x server. For the official InfluxDB add-on this is a0d7b954-influxdb.
+  influxdb_port:
+    name: InfluxDB port
+    description: Usually 8086.
+  influxdb_ssl:
+    name: InfluxDB uses HTTPS
+    description: Turn on only if the InfluxDB server has SSL enabled.
+  influxdb_database:
+    name: InfluxDB database
+    description: Existing database to write into (measurements ml_layer_pv, ml_layer_pv_slot, ml_layer_dayahead).
+  influxdb_username:
+    name: InfluxDB user
+    description: Optional. User with write access to the database.
+  influxdb_password:
+    name: InfluxDB password
+    description: Optional. Password of the InfluxDB user.
+  influxdb_dayahead_snapshot_hour:
+    name: Snapshot hour
+    description: Local hour from which tomorrow's forecast is saved once per day (20 = before the EMHASS day-ahead run at 20:05).

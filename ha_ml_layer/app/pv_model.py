@@ -47,23 +47,15 @@ from river import forest, metrics, preprocessing, utils
 
 log = logging.getLogger("pv_model")
 
-# --- Entities (verified live 14.10.2026) ------------------------------------
-ENTITY_SOLCAST_TODAY = "sensor.solcast_pv_forecast_forecast_today"        # .detailedForecast: pv_estimate/10/90 in kW (30-min average power)
-ENTITY_SOLCAST_TOMORROW = "sensor.solcast_pv_forecast_forecast_tomorrow"
-ENTITY_ACTUAL_POWER = "sensor.goodwe_pv_power_effective"                  # W, Modbus primary + native fallback
-ENTITY_ACTUAL_POWER_FALLBACK = "sensor.pv_power"                          # W, native GoodWe (was unavailable on 14.10.)
-ENTITY_IRRADIANCE = "sensor.ecowitt_solar_radiation_1f335"                # W/m^2 (entity id can change after a gateway reconnect!)
+# --- Output entities (input entities come from the add-on options) ---------
 ENTITY_OUTPUT_CORRECTED = "sensor.pv_ml_corrected_forecast"               # current value (day-ahead x nowcast)
 ENTITY_OUTPUT_CURVE = "sensor.pv_ml_corrected_forecast_curve"             # 48 x 30 min, read by the EMHASS rest_commands
+# Solcast detailedForecast: pv_estimate/10/90 in kW (30-min average power)
 # -----------------------------------------------------------------------------
 
 # v3: residual target + slot-mean training + scaled features; older pickles are incompatible
 DAYAHEAD_MODEL_PATH = Path("/data/pv_dayahead_model_v3.pkl")
 NOWCAST_MODEL_PATH = Path("/data/pv_nowcast_model_v3.pkl")
-
-LATITUDE = 48.2
-LONGITUDE = 16.1
-TZ = "Europe/Vienna"
 
 SLOT = timedelta(minutes=30)
 SLOT_MID = SLOT / 2            # solar geometry at the slot midpoint (Solcast value = slot mean)
@@ -82,7 +74,13 @@ ROLLING_NOWCAST = 600          # 5-min samples (~4-5 days) for the nowcast-vs-da
 MIN_SLOT_COVERAGE = 0.6        # share of a slot that must have actual readings to learn on it
 CSI_MAX_GAP = timedelta(minutes=20)  # older CSI history (e.g. yesterday evening) is dropped
 
-_LOCATION = pvlib.location.Location(latitude=LATITUDE, longitude=LONGITUDE, tz=TZ)
+_LOCATION = pvlib.location.Location(latitude=48.2, longitude=16.1, tz="Europe/Vienna")
+
+
+def set_location(latitude, longitude, tz):
+    """Site for clear-sky and sun position (from the add-on options)."""
+    global _LOCATION
+    _LOCATION = pvlib.location.Location(latitude=latitude, longitude=longitude, tz=tz)
 
 
 # --- Solar geometry ----------------------------------------------------------

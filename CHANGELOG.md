@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.3.0 — 2026-10-20
+
+### Konfiguration
+- Alle Eingangs-Sensoren, Standort und Etagen des Wärmemodells werden im
+  Konfigurations-Tab des Add-ons eingetragen (vorher fest im Code). Beschriftungen
+  und Erklärungen in `translations/en.yaml`.
+- Ungültige Eingaben werden beim Start im Log gemeldet.
+- Altes Optionsformat (`models`-Liste) wird weiter verstanden.
+- `input_select.heating_stage` ist jetzt optional (`thermal_heating_stage`, Standard leer);
+  die Etage gilt als beheizt, wenn der Zustand ihrem Namen entspricht.
+
+### InfluxDB
+- Optionales Schreiben in InfluxDB 1.x: `ml_layer_pv` (jeder Zyklus),
+  `ml_layer_pv_slot` (je 30-min-Slot), `ml_layer_dayahead` (abendlicher
+  Schnappschuss der Prognose für morgen) als Datenbasis für Backtests.
+
 ## 0.2.0 — 2026-10-20
 
 PV-Modelle lernen nach dem Update neu (Modelldateien `*_v3.pkl`).

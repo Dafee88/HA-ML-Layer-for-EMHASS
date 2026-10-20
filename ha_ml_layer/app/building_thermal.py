@@ -32,25 +32,8 @@ log = logging.getLogger("building_thermal")
 
 STATE_FILE = "/data/building_thermal.json"
 
-ENTITY_OUTDOOR = "sensor.ecowitt_outdoor_temp_1f335"
-ENTITY_OUTDOOR_FALLBACK = "sensor.vitocal_outdoor_temperature"
-ENTITY_STAGE = "input_select.heating_stage"
-ENTITY_IRRADIANCE = "sensor.ecowitt_solar_radiation_1f335"
-
-FLOORS = {
-    "downstairs": {
-        "temp": "sensor.eve_room_e9ff_temperature",
-        "heat_switch": "switch.shelly1pmminig3_5432044e9dfc",
-        "output": "sensor.building_thermal_downstairs",
-        "name": "Building Thermal Downstairs",
-    },
-    "upstairs": {
-        "temp": "sensor.eve_room_e49e_temperature",
-        "climate": "climate.smart_thermostat_x_2",
-        "output": "sensor.building_thermal_upstairs",
-        "name": "Building Thermal Upstairs",
-    },
-}
+# Input entities and floors come from the add-on options (config.py).
+# Output per floor: sensor.building_thermal_<floor name>.
 
 MIN_WINDOW_S = 3600        # learn over >= 60 min
 MIN_DELTA_K = 3.0          # cooling only with enough indoor/outdoor difference
@@ -68,15 +51,24 @@ def _f(st):
 
 
 class BuildingThermalModel:
-    def __init__(self, max_gap_s=660):
+    def __init__(self, cfg, max_gap_s=660):
         self.max_gap_s = max_gap_s
+        self.outdoor = cfg.thermal_outdoor_temp
+        self.outdoor_fallback = cfg.thermal_outdoor_temp_fallback
+        self.stage = cfg.thermal_heating_stage
+        self.irradiance = cfg.pv_irradiance
+        self.floors = {}
+        for fl in cfg.thermal_floors:
+            self.floors[fl["name"]] = dict(
+                fl, output=f"sensor.building_thermal_{fl['name']}",
+                friendly=f"Building Thermal {fl['name'].replace('_', ' ').title()}")
         self.data = {f: {"k": None, "h": None, "n_k": 0, "n_h": 0,
-                         "anchor": None} for f in FLOORS}
+                         "anchor": None} for f in self.floors}
         if os.path.exists(STATE_FILE):
             try:
                 with open(STATE_FILE) as fh:
                     saved = json.load(fh)
-                for f in FLOORS:
+                for f in self.floors:
                     if f in saved:
                         self.data[f].update(saved[f])
                 log.info("Thermal model loaded: %s", {f: (d["k"], d["h"], d["n_k"], d["n_h"]) for f, d in self.data.items()})
@@ -97,30 +89,30 @@ class BuildingThermalModel:
         return new if old is None else (1 - ALPHA) * old + ALPHA * new
 
     def _heating_on(self, floor, states):
-        cfg = FLOORS[floor]
-        if "heat_switch" in cfg:
+        cfg = self.floors[floor]
+        if cfg.get("heat_switch"):
             st = states.get(cfg["heat_switch"])
             return None if st is None or st.get("state") in ("unknown", "unavailable") else st.get("state") == "on"
-        stage = (states.get(ENTITY_STAGE) or {}).get("state")
+        stage = (states.get(self.stage) or {}).get("state") if self.stage else None
         action = ((states.get(cfg["climate"]) or {}).get("attributes") or {}).get("hvac_action")
         if stage is None and action is None:
             return None
-        return stage == "upstairs" or action == "heating"
+        return stage == floor or action == "heating"
 
     def update(self, ha):
-        entities = [ENTITY_OUTDOOR, ENTITY_OUTDOOR_FALLBACK, ENTITY_STAGE, ENTITY_IRRADIANCE]
-        for cfg in FLOORS.values():
+        entities = [self.outdoor, self.outdoor_fallback, self.stage, self.irradiance]
+        for cfg in self.floors.values():
             entities.append(cfg["temp"])
             entities.append(cfg.get("heat_switch") or cfg["climate"])
-        states = ha.get_states(entities)
+        states = ha.get_states([e for e in entities if e])
 
-        t_out = _f(states.get(ENTITY_OUTDOOR))
-        if t_out is None:
-            t_out = _f(states.get(ENTITY_OUTDOOR_FALLBACK))
-        irr = _f(states.get(ENTITY_IRRADIANCE))  # None -> no sun filter
+        t_out = _f(states.get(self.outdoor))
+        if t_out is None and self.outdoor_fallback:
+            t_out = _f(states.get(self.outdoor_fallback))
+        irr = _f(states.get(self.irradiance)) if self.irradiance else None  # None -> no sun filter
         now = time.time()
 
-        for floor, cfg in FLOORS.items():
+        for floor, cfg in self.floors.items():
             d = self.data[floor]
             t_in = _f(states.get(cfg["temp"]))
             heat = self._heating_on(floor, states)
@@ -168,14 +160,14 @@ class BuildingThermalModel:
         self.publish(ha)
 
     def publish(self, ha):
-        for floor, cfg in FLOORS.items():
+        for floor, cfg in self.floors.items():
             d = self.data[floor]
             ready = d["n_k"] >= 10 and d["n_h"] >= 5
             ha.set_state(
                 cfg["output"],
                 "calibrated" if ready else "learning",
                 attributes={
-                    "friendly_name": cfg["name"],
+                    "friendly_name": cfg["friendly"],
                     "cooling_constant_per_h": round(d["k"], 5) if d["k"] is not None else None,
                     "heating_rate_k_per_h": round(d["h"], 4) if d["h"] is not None else None,
                     "samples_cooling": d["n_k"],
