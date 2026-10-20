@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.2 — 2026-10-20
+- Add-on heißt jetzt „HA ML Layer for EMHASS“.
+- Neues Icon: Schriftzug mit Hirn-Symbol (Quelle `assets/icon.svg`).
+
 ## 0.3.1 — 2026-10-20
 - Icon (`icon.png`, 128 × 128) und Logo (`logo.png`, 250 × 100) für den
   Add-on-Store; Logo auch oben in der README. Quellen in `assets/`.
