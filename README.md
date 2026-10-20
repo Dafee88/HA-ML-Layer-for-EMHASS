@@ -16,7 +16,7 @@ Enthalten sind zwei Modelle:
 
 Voraussetzungen: die [Solcast-Integration](https://github.com/BJReplay/ha-solcast-solar) (liefert die 30-min-Kurve im Attribut `detailedForecast`) und ein Sensor für die aktuelle PV-Leistung in W. Optional: ein Einstrahlungssensor (W/m², z. B. Wetterstation), Raum- und Außentemperaturen für das Wärmemodell, InfluxDB 1.x.
 
-Änderungen je Version: siehe [CHANGELOG.md](CHANGELOG.md).
+Änderungen je Version: siehe [CHANGELOG.md](ha_ml_layer/CHANGELOG.md).
 
 ---
 
@@ -221,3 +221,13 @@ Solcast unverändert durchgereicht, danach übernimmt das Modell, sobald
 - **Nur Anzeige:** Die Modelle ändern keine EMHASS-Konfiguration selbst. Die
   Sensoren werden per `POST /api/states` gesetzt und landen daher nicht in der
   Langzeitstatistik.
+
+---
+
+## Releases
+Jede Version bekommt drei Dinge:
+1. `version` in `ha_ml_layer/config.yaml` erhöhen (sonst zeigt Home Assistant kein Update an),
+2. einen Eintrag oben in [`ha_ml_layer/CHANGELOG.md`](ha_ml_layer/CHANGELOG.md) – den zeigt Home Assistant beim Update an,
+3. ein GitHub-Release mit Tag `v<version>` und demselben Changelog-Text
+   ([Releases](https://github.com/Dafee88/HA-ML-Layer-for-EMHASS/releases)).
+
