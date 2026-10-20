@@ -1,102 +1,146 @@
-# HA ML Layer — Skelett (Version 0.1.0, unverifiziert)
+# HA ML Layer für EMHASS (Version 0.2.0)
 
-Zentrale Online-Learning-Schicht für das Energiemanagement-System, gemäß
-Architekturentscheidung aus der Systemdokumentation (Abschnitt 2.3):
-River statt scikit-learn, eigener Docker-Add-on nach EMHASS-Vorbild.
+Home-Assistant-Add-on mit einer Online-Learning-Schicht (River) für das
+Energiemanagement mit EMHASS. Es läuft als eigener Docker-Dienst, fragt
+Home Assistant alle 5 Minuten über die REST-API ab, lernt fortlaufend aus
+Messwerten und schreibt seine Ergebnisse als Sensoren zurück.
 
-## Was das hier ist
-Ein **Skelett**, kein fertiges, getestetes Add-on. Es demonstriert die
-Architektur (Online-Learning mit River, Polling über HA-REST-API,
-externer Ergebnis-Sensor) konkret lauffähig, aber mit drei offenen Punkten,
-die vor dem echten Deployment auf dem NUC geklärt werden müssen:
+Enthalten sind zwei Modelle:
 
-1. **Entity-IDs verifiziert (21.08.2026).** `sensor.p_pv_forecast` (Forecast.Solar,
-   Momentanleistung) und `sensor.solcast_pv_forecast_forecast_this_hour`
-   (Solcast, Momentanleistung) liefern beide Watt-Werte für die aktuelle
-   Stunde, `sensor.pv_power` die Ist-Leistung — bereits im Fast-Charging-Test
-   verifiziert. Damit lernt das Modell direkt auf Momentanleistung statt nur
-   auf Tagessummen (siehe Punkt 2, das war vorher ein offener Punkt, ist es
-   jetzt nicht mehr).
-2. **Granularität ist jetzt hoch genug für echtes Online-Learning:** Poll alle
-   5 Minuten liefert ~100+ Trainings-Datenpunkte pro Tag statt nur einem
-   (Tagessumme), was das "nur ~10-14 Tage Historie"-Problem aus Doku Abschnitt
-   4.5 entschärft — mehr Datenpunkte pro Tag kompensiert die kurze Zeitspanne.
-3. **InfluxDB-Anbindung fehlt noch komplett.** Das Skelett liest nur über
-   die HA-REST-API (aktuelle States), nicht aus InfluxDB. Für Backtesting
-   mit echter Historie (relevant für das 2-Jahres-Retention-Ziel) müsste
-   ein separates Init-Skript die InfluxDB-Query-API (Port 8086) anfragen —
-   **zusätzlich blockiert**, weil das dokumentierte Add-on-Passwort nicht
-   gegen die echte InfluxDB-Instanz funktioniert (Systemdoku Abschnitt 6,
-   Punkt 2) — noch ungeklärt.
+| Modell | Add-on-Option | Ausgabe |
+|---|---|---|
+| PV-Prognose-Korrektur (Day-Ahead + Nowcast) | `pv_forecast_correction` | `sensor.pv_ml_corrected_forecast`, `sensor.pv_ml_corrected_forecast_curve` |
+| Gebäude-Wärmemodell (pro Etage) | `building_thermal` | `sensor.building_thermal_downstairs`, `sensor.building_thermal_upstairs` |
 
-## Deployment (grober Ablauf)
-1. Diesen Ordner nach `/addons/ha_ml_layer/` auf dem NUC kopieren
-   (lokales Add-on-Repository)
-2. In Home Assistant: Einstellungen → Add-ons → Add-on-Store → oben rechts
-   neu laden → "HA ML Layer" sollte unter "Lokale Add-ons" erscheinen
-3. Vor dem Start: Entity-IDs in `app/pv_model.py` korrigieren
-4. Add-on installieren und starten, Logs beobachten
-5. Neuen Sensor `sensor.pv_ml_corrected_forecast` im Dashboard beobachten,
-   `current_mae_w`-Attribut zeigt den laufenden mittleren Fehler
+Änderungen je Version: siehe [CHANGELOG.md](CHANGELOG.md).
 
-## Nicht enthalten (bewusst, für spätere Schritte)
-- Rückschreiben in EMHASS-Konfiguration (aktuell nur Anzeige-Sensor,
-  passend zum Governance-Prinzip "LLM/Modell schlägt vor, ändert nicht
-  autonom EMHASS-Kernkonfig")
-- Gebäude-Wärmemodell (RC-Modell) — als zweites Modell im selben Dienst
-  vorgesehen (Abschnitt 2.3), noch nicht begonnen
-- Persistenz-Volume-Konfiguration in `config.yaml` für `/data/` — Standard-
-  Add-on-Verhalten sollte das automatisch abdecken, aber nicht getestet
+---
 
+## PV-Prognose-Korrektur (`app/pv_model.py`)
 
-## Analyse & Verbesserungen (15.10.2026)
+### Eingänge
+| Entity | Bedeutung |
+|---|---|
+| `sensor.solcast_pv_forecast_forecast_today` / `_tomorrow` | Solcast `detailedForecast`: P50/P10/P90 in kW, 30-min-Mittelleistung |
+| `sensor.goodwe_pv_power_effective` (Fallback `sensor.pv_power`) | Ist-Leistung in W |
+| `sensor.ecowitt_solar_radiation_1f335` | Einstrahlung in W/m² (Entity-ID kann sich nach einem Gateway-Reconnect ändern!) |
 
-### Umgesetzt
-**PV-Prognose** (`app/pv_model.py`, `app/main.py`; Modelldateien jetzt `*_v2.pkl`,
-d. h. das Lernen startet neu — die alten v1-Modelle haben ein anderes Ziel und
-sind inkompatibel):
-1. **Residual statt Absolutwert.** Beide Modelle lernen `Ist − Basis`
-   (Day-Ahead: Solcast P50, Nowcast: Day-Ahead-Wert). Baum-Ensembles (ARF)
-   können nicht extrapolieren und erzeugen bei Absolutwerten Treppenkurven;
-   ein Residual behält die Kurvenform von Solcast und fällt sauber darauf zurück.
-2. **Lernen auf dem Slot-Mittelwert.** Solcast liefert 30-min-Mittelleistung,
-   EMHASS verbraucht 30-min-Werte — vorher lernte das Day-Ahead-Modell alle
-   5 min auf Momentanwerten, wobei die 6 Samples eines Slots *identische*
-   Features hatten (6-fach gewichtetes Rauschen). Jetzt: `SlotAccumulator`
-   mittelt die Ist-Werte und lernt einmal pro Slot (≥ 60 % Abdeckung nötig).
-3. **Sonnengeometrie in Slot-Mitte** statt Slot-Beginn (Sonnenaufgangs-Slot
-   wurde vorher fälschlich auf 0 W gesetzt).
-4. **Gating gegen die Baseline.** Ein Modell wird nur benutzt, solange sein
-   rollierender MAE (Day-Ahead ~300 Slots, Nowcast ~600 Samples) *besser* ist
-   als der der Baseline auf denselben Samples. Neue Attribute:
-   `mae_solcast_w`, `mae_nowcast_baseline_w`, `dayahead_active`,
-   `nowcast_active` — damit ist erstmals sichtbar, ob das ML Solcast schlägt.
-5. **CSI-Historie** des Nowcasts wird nach Lücken > 20 min verworfen (vorher
-   flossen Werte vom Vorabend in den ersten Morgenwert ein).
-6. **Atomares Speichern** (tmp + `os.replace`) — ein Absturz beim Schreiben
-   löscht kein gelerntes Modell mehr.
+Bewusst **nicht** verwendet: `sensor.p_pv_forecast`. Das ist die Ausgabe von
+EMHASS selbst; sobald EMHASS die ML-Kurve bekommt, würde das Modell von seiner
+eigenen Prognose lernen.
 
-**Gebäude-Wärmemodell** (`app/building_thermal.py`):
-1. Fenster wird verworfen, wenn das Polling eine Lücke hatte (Add-on-Neustart,
-   HA down) — vorher konnte ein Fenster über Stunden mit unbeobachtetem
-   Heizungswechsel laufen.
-2. Fenster wird verworfen, wenn die Einstrahlung (Ecowitt) > 50 W/m² war —
-   Solargewinne würden k zu klein und h zu groß schätzen.
-3. Atomares Speichern.
+Standort (Breite 48,2 / Länge 16,1, `Europe/Vienna`) und Entity-IDs stehen als
+Konstanten oben in `app/pv_model.py`.
 
-### Offene Empfehlungen (nicht umgesetzt)
-- **Vorlaufzeit-Mismatch (größter verbleibender Hebel):** Das Day-Ahead-Modell
-  lernt mit dem *zuletzt* aktualisierten Solcast-Wert eines Slots (Vorlauf
-  ~0 h), angewendet wird es aber auf Werte mit bis zu 24 h Vorlauf. Besser:
-  Feature-Snapshots der Kurve zum Prognosezeitpunkt speichern (z. B. zum
-  EMHASS-Day-Ahead-Lauf) und auf genau diesen mit Feature `lead_h` lernen.
-- **Abregelung herausfiltern:** Wenn die Anlage abgeregelt wird (Batterie voll
-  + Einspeiselimit, negative Preise), lernt das Modell die Abregelung als
-  „schlechtes Wetter". Samples mit aktiver Begrenzung sollten übersprungen
-  werden (Entity für Export-Limit/Wechselrichter-Status nötig).
-- **Wärmemodell:** Fußbodenheizung hat Stunden Nachlauf — nach dem Ausschalten
-  eher 2–3 h statt 60 min verwerfen; Steigung per linearer Regression über das
-  ganze Fenster statt aus zwei Endpunkten (0,1-K-Sensorauflösung ergibt sonst
-  ±0,1 K/h Rauschen, bei k·ΔT ≈ 0,2–0,5 K/h erheblich).
-- **InfluxDB-Backfill** (siehe oben, Punkt 3) würde den Kaltstart von ~3–4
-  Tagen auf null reduzieren.
+### Zwei Modelle
+1. **Day-Ahead-Modell.** Korrigiert Solcast für die nächsten 48 × 30 min.
+   Es nutzt nur Features, die es auch für die Zukunft gibt: Solcast
+   P50/P10/P90, Clear-Sky-Einstrahlung, Sonnenhöhe in der Slot-Mitte,
+   Tages- und Jahreszeit. Training und Prognose verwenden denselben
+   Feature-Builder.
+2. **Nowcast-Modell.** Korrigiert den *aktuellen* Wert mit der live gemessenen
+   Ecowitt-Einstrahlung (Clear-Sky-Index und seine Schwankung über 30 min).
+   Seine Wirkung auf die Kurve klingt mit `exp(−Δt / 1 h)` ab, weil ein Sensor
+   keine Wolken sieht, die noch nicht da sind.
+
+### Lernverfahren
+- **Residual statt Absolutwert:** Beide Modelle lernen `Ist − Basis`
+  (Day-Ahead: Solcast P50, Nowcast: Day-Ahead-Wert). Die Kurvenform von
+  Solcast bleibt erhalten.
+- **Ein Lernschritt pro Slot:** Das Day-Ahead-Modell lernt einmal je 30-min-Slot
+  auf dem Mittel der Ist-Werte (mindestens 60 % Abdeckung), also auf genau der
+  Größe, die Solcast prognostiziert und EMHASS verwendet.
+- **Skalierte Features:** `StandardScaler` vor dem `ARFRegressor`. Ohne
+  Skalierung divergieren dessen lineare Blattmodelle bei Watt-Werten.
+- **Gating gegen die Basis:** Ein Modell wird erst nach einer Mindestzahl von
+  Samples verwendet (Day-Ahead 60 Slots ≈ 3–4 Tage, Nowcast 150 × 5 min) und
+  nur, solange sein rollierender MAE kleiner ist als der der Basis auf denselben
+  Samples. Sonst wird die Basis unverändert durchgereicht. Die ML-Schicht
+  macht die Prognose also nicht dauerhaft schlechter als Solcast.
+- Gelernt wird nur bei Sonnenhöhe ≥ 5° und plausiblen Ist-Werten (0–15 kW).
+
+### Ausgaben
+`sensor.pv_ml_corrected_forecast`: aktueller korrigierter Wert in W. Attribute:
+
+| Attribut | Bedeutung |
+|---|---|
+| `dayahead_active`, `nowcast_active` | `true`, wenn das Modell gerade verwendet wird (besser als seine Basis) |
+| `mae_dayahead_w` / `mae_solcast_w` | rollierender MAE des Day-Ahead-Modells / von Solcast auf denselben Slots |
+| `mae_nowcast_w` / `mae_nowcast_baseline_w` | dasselbe für den Nowcast gegen den Day-Ahead-Wert |
+| `samples_dayahead`, `samples_nowcast` | Anzahl gelernter Samples |
+| `dayahead_now_w`, `solcast_p50_now_w`, `nowcast_factor` | Zwischenwerte des aktuellen Zyklus |
+
+`sensor.pv_ml_corrected_forecast_curve`: Attribut `forecasts` mit 48 Einträgen
+`{"date": …, "p_pv_forecast": …}`. Diese Kurve lesen die EMHASS-`rest_command`s.
+
+Gelernte Modelle liegen in `/data/pv_dayahead_model_v3.pkl` und
+`/data/pv_nowcast_model_v3.pkl`.
+
+---
+
+## Gebäude-Wärmemodell (`app/building_thermal.py`)
+
+Lernt pro Etage aus Messwerten:
+- **Abkühlkonstante k** [1/h] bei Heizung AUS: `dT/dt = −k · (T_innen − T_außen)`
+- **Heizrate h** [K/h] bei Heizung EIN: `dT/dt = h − k · (T_innen − T_außen)`
+
+| Etage | Temperatur | Heizung EIN |
+|---|---|---|
+| unten | `sensor.eve_room_e9ff_temperature` | `switch.shelly1pmminig3_5432044e9dfc` = `on` |
+| oben | `sensor.eve_room_e49e_temperature` | `input_select.heating_stage` = `upstairs` oder Tado `hvac_action` = `heating` |
+
+Außentemperatur: Ecowitt, Fallback Vitocal (MQTT).
+
+Ein Lernfenster dauert mindestens 60 min bei unverändertem Heizzustand. Es wird
+verworfen, wenn
+- das Polling eine Lücke hatte (Add-on-Neustart, HA nicht erreichbar),
+- die Einstrahlung über 50 W/m² lag (Solargewinne verfälschen k und h),
+- beim Abkühlen die Differenz innen/außen unter 3 K lag.
+
+Werte werden per gleitendem Mittel (α = 0,1) geglättet und in
+`/data/building_thermal.json` gespeichert. Der Sensorzustand ist `calibrated`
+ab 10 Abkühl- und 5 Heiz-Samples, vorher `learning`.
+
+---
+
+## Installation
+1. Diesen Ordner nach `/addons/ha_ml_layer/` auf dem Home-Assistant-Host kopieren
+   (lokales Add-on-Repository).
+2. Einstellungen → Add-ons → Add-on-Store → oben rechts neu laden →
+   „HA ML Layer" erscheint unter „Lokale Add-ons".
+3. Bei einer anderen Anlage: Entity-IDs und Standort in `app/pv_model.py` und
+   `app/building_thermal.py` anpassen.
+4. Installieren, Modelle in den Optionen aktivieren, starten, Logs beobachten.
+
+### Optionen
+| Option | Standard | Bedeutung |
+|---|---|---|
+| `poll_interval_seconds` | 300 | Abfrageintervall (60–3600 s) |
+| `log_level` | `info` | `debug` / `info` / `warning` / `error` |
+| `models` | PV an, Wärme aus | Modelle einzeln aktivieren |
+
+### Update auf 0.2.0
+Die PV-Modelle lernen ab dem Update neu (`*_v3.pkl`). Alte `*.pkl` in `/data/`
+werden nicht mehr gelesen und können gelöscht werden. Etwa 3–4 Tage lang wird
+Solcast unverändert durchgereicht, danach übernimmt das Modell, sobald
+`dayahead_active` auf `true` steht.
+
+---
+
+## Grenzen und offene Punkte
+- **Vorlaufzeit:** Das Day-Ahead-Modell lernt mit dem zuletzt aktualisierten
+  Solcast-Wert eines Slots (Vorlauf fast 0 h), wird aber auf Werte mit bis zu
+  24 h Vorlauf angewendet. Abhilfe: Feature-Snapshots zum Prognosezeitpunkt
+  speichern und mit einem Feature `lead_h` lernen.
+- **Abregelung:** Bei voller Batterie, Einspeiselimit oder negativen Preisen
+  lernt das Modell die Abregelung als „schlechtes Wetter". Dafür fehlt noch
+  eine Entity mit dem Begrenzungsstatus des Wechselrichters.
+- **Wärmemodell:** Die Fußbodenheizung wirkt stundenlang nach. Besser wären
+  2–3 h Sperrzeit nach dem Umschalten und eine Regressionsgerade über das ganze
+  Fenster statt zweier Endpunkte (Sensorauflösung 0,1 K).
+- **Keine InfluxDB-Anbindung:** Es wird nur über die HA-REST-API gelesen. Ein
+  Backfill aus InfluxDB würde den Kaltstart verkürzen. Blockiert, weil das
+  dokumentierte Add-on-Passwort nicht gegen die InfluxDB-Instanz funktioniert.
+- **Nur Anzeige:** Die Modelle ändern keine EMHASS-Konfiguration selbst. Die
+  Sensoren werden per `POST /api/states` gesetzt und landen daher nicht in der
+  Langzeitstatistik.

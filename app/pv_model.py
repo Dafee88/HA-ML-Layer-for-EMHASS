@@ -16,7 +16,7 @@ Two models, rebuilt 14.10.2026:
    next ~2 hours (smart persistence), because a sensor cannot see clouds that
    have not arrived yet.
 
-Learning scheme (rebuilt 15.10.2026, model files v2):
+Learning scheme (rebuilt 15.10.2026, model files v3 since 16.10.2026):
   - Both models learn the RESIDUAL on top of a baseline (day-ahead: Solcast P50,
     nowcast: day-ahead value) instead of absolute watts. Trees cannot
     extrapolate; a residual keeps the baseline's shape and falls back to it
