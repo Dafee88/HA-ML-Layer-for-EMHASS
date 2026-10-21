@@ -319,6 +319,33 @@ def pv_cycle(ha, cfg, dayahead, nowcast, slot_acc, log, influx=None, snapshot=No
                 log.info("InfluxDB: day-ahead snapshot for %s written (%d slots)", tomorrow, len(lines))
 
 
+def log_influx_inventory(influx, cfg, log):
+    """Once at start: which history of the configured sensors is in InfluxDB
+    (read-only). Basis for learning from history."""
+    entities = [cfg.pv_solcast_today, cfg.pv_solcast_tomorrow, cfg.pv_actual_power,
+                cfg.pv_actual_power_fallback, cfg.pv_irradiance, cfg.pv_curtailed,
+                cfg.pv_reference_irradiance, cfg.thermal_outdoor_temp] \
+        + cfg.pv_secondary_today + cfg.pv_secondary_tomorrow \
+        + [f["temp"] for f in cfg.thermal_floors]
+    for e in [e for e in dict.fromkeys(entities) if e]:
+        inv = influx.inventory(e)
+        if inv is None:
+            log.warning("InfluxDB history check: query failed for %s (see InfluxDB warning above)", e)
+            return
+        if not inv:
+            log.info("InfluxDB history: %s -> no data", e)
+        for m in inv:
+            days = (m["last"] - m["first"]) / 86400 if m.get("first") and m.get("last") else 0
+            curve = any("detailedforecast" in f.lower() for f in m["fields"])
+            log.info("InfluxDB history: %s -> '%s' %s .. %s (%.0f days), fields: %s%s",
+                     e, m["measurement"],
+                     datetime.fromtimestamp(m["first"], timezone.utc).date() if m.get("first") else "?",
+                     datetime.fromtimestamp(m["last"], timezone.utc).date() if m.get("last") else "?",
+                     days, ", ".join(m["fields"][:8]),
+                     " | Solcast 30-min curve stored: YES" if curve else
+                     (" | Solcast 30-min curve stored: no" if "solcast" in e else ""))
+
+
 def run():
     cfg = Config()
     logging.basicConfig(level=cfg.log_level.upper())
@@ -352,6 +379,7 @@ def run():
         influx = InfluxWriter(cfg.influx_host, cfg.influx_port, cfg.influx_database,
                               cfg.influx_username, cfg.influx_password, cfg.influx_ssl)
         log.info("InfluxDB enabled: %s", influx.describe())
+        log_influx_inventory(influx, cfg, log)
     snapshot = {}
 
     log.info("ha-ml-layer started. Poll interval: %ss | pv=%s thermal=%s influx=%s station=%s "

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.2 — 2026-10-21
+
+### InfluxDB
+- Beim Start (mit `influxdb_enabled`) prüft das Add-on nur lesend, welche Historie
+  der eingetragenen Sensoren in InfluxDB liegt, und schreibt pro Sensor eine Zeile
+  ins Log: Measurement, erster/letzter Wert, Felder und ob die Solcast-30-min-Kurve
+  mitgespeichert wird. Grundlage für das spätere Lernen aus der Historie.
+- Fehlermeldungen heißen jetzt „InfluxDB request failed“ (galt auch für Abfragen).
+- Getestet gegen eine echte InfluxDB 1.x mit Daten im Format der HA-Integration.
+
 ## 0.5.1 — 2026-10-20
 
 ### Dokumentation

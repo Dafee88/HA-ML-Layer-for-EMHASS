@@ -103,3 +103,7 @@ Enable `influxdb_enabled` and enter host (InfluxDB add-on: `a0d7b954-influxdb`),
 database, user and password. Measurements: `ml_layer_pv` (every cycle),
 `ml_layer_pv_slot` (per 30-min slot), `ml_layer_dayahead` (evening snapshot of
 tomorrow's forecast). HTTP 401 in the log means the login is wrong.
+
+At start the add-on logs, read-only, which history of your configured sensors
+exists in InfluxDB (`InfluxDB history: ...` lines: measurement, first/last
+value, fields, and whether Solcast's 30-min curve is stored).

@@ -56,6 +56,7 @@ class InfluxWriter:
     def __init__(self, host, port, database, username=None, password=None, ssl=False, timeout=10):
         scheme = "https" if ssl else "http"
         self.url = f"{scheme}://{host}:{port}/write"
+        self.query_url = f"{scheme}://{host}:{port}/query"
         self.database = database
         self.auth = (username, password) if username else None
         self.timeout = timeout
@@ -89,4 +90,48 @@ class InfluxWriter:
         now = time.monotonic()
         if now - self._last_error.get(text, -1e9) >= _ERROR_LOG_INTERVAL_S:
             self._last_error[text] = now
-            log.warning("InfluxDB write failed (%s): %s", self.describe(), text)
+            log.warning("InfluxDB request failed (%s): %s", self.describe(), text)
+
+    # --- read-only access -------------------------------------------------
+    def query(self, q):
+        """InfluxQL query; returns the list of series of the first result, or None on error."""
+        try:
+            r = requests.get(self.query_url, params={"db": self.database, "q": q, "epoch": "s"},
+                             auth=self.auth, timeout=30)
+            if r.status_code != 200:
+                self._error(f"query HTTP {r.status_code}: {r.text.strip()[:200]}")
+                return None
+            res = (r.json().get("results") or [{}])[0]
+            if "error" in res:
+                self._error(f"query error: {res['error']}")
+                return None
+            return res.get("series", [])
+        except (requests.RequestException, ValueError) as exc:
+            self._error(f"query {type(exc).__name__}: {exc}")
+            return None
+
+    def inventory(self, entity_id):
+        """What history exists for one HA entity (HA's InfluxDB integration stores
+        the object id in the tag entity_id, one measurement per unit).
+        Returns a list of dicts per measurement, [] if nothing, None on error."""
+        obj = entity_id.split(".", 1)[-1].replace("'", "")
+        out = []
+        for order in ("ASC", "DESC"):
+            series = self.query(f"SELECT * FROM /.*/ WHERE \"entity_id\" = '{obj}' "
+                                f"GROUP BY * ORDER BY time {order} LIMIT 1")
+            if series is None:
+                return None
+            for s in series:
+                m = next((d for d in out if d["measurement"] == s["name"]), None)
+                if m is None:
+                    m = {"measurement": s["name"], "fields": []}
+                    out.append(m)
+                row = s["values"][0] if s.get("values") else []
+                # SELECT * over several measurements returns the union of all
+                # field keys -> only fields with a value belong to this entity
+                for c, v in zip(s["columns"], row):
+                    if c != "time" and v is not None and c not in m["fields"]:
+                        m["fields"].append(c)
+                m["first" if order == "ASC" else "last"] = row[0] if row else None
+        return out
+
