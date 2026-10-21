@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import re
+from datetime import datetime, timezone
 
 log = logging.getLogger("config")
 
@@ -125,6 +126,14 @@ class Config:
         self.influx_password = opts.get("influxdb_password") or None
         self.influx_snapshot_hour = int(opts.get("influxdb_dayahead_snapshot_hour", 20))
         self.influx_learn_history = bool(opts.get("influxdb_learn_from_history", True))
+        self.influx_history_start = None
+        hs = (opts.get("influxdb_history_start") or "").strip()
+        if hs:
+            try:
+                d = datetime.strptime(hs, "%Y-%m-%d")
+                self.influx_history_start = d.replace(tzinfo=timezone.utc)
+            except ValueError:
+                problems.append(f"influxdb_history_start: '{hs}' is not a date (YYYY-MM-DD)")
 
         if self.pv_enabled and not (self.pv_solcast_today and self.pv_solcast_tomorrow and self.pv_actual_power):
             problems.append("PV model needs pv_solcast_today, pv_solcast_tomorrow and pv_actual_power")

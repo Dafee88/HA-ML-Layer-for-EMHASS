@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.6.2 — 2026-10-21
+
+### Fix: Historie nur aus der aktuellen Solcast-Einrichtung
+- Problem in 0.6.1 (live gesehen): Die Historie enthielt Wochen, in denen Solcast
+  anders eingerichtet war (eine statt zwei Dachflächen, Tagesprognosen bis 50 kWh
+  bei real ~17 kWh). Das Modell lernte daraus „Solcast liegt ×2,5 zu hoch“ und
+  drückte die aktuelle, korrekte Prognose zu stark (Rolling-MAE Solcast 1309 W auf
+  den alten Daten).
+- Jetzt erkennt das Add-on Änderungen der Solcast-Dachflächen (pro Fläche ein
+  Attribut mit der Resource-ID; Fläche hinzugefügt oder entfernt) und lernt nur
+  die Historie danach.
+- Neue Option `influxdb_history_start` (JJJJ-MM-TT) für andere Änderungen
+  (neue Module, geänderte Geometrie/Leistung bei solcast.com).
+- Das Modell wird nach dem Update einmal neu aufgebaut (Marker v2); als Backup
+  bleibt das ursprüngliche Modell vor dem ersten Nachlernen erhalten.
+- Test (echte InfluxDB 1.x): Flächenwechsel korrekt erkannt, nur Slots danach
+  gelernt.
+
 ## 0.6.1 — 2026-10-21
 
 ### Lernen aus der InfluxDB-Historie

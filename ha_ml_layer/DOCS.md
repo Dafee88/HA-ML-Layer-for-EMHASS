@@ -126,8 +126,13 @@ the curtailment indicator was on, and - with a weather station - where the
 actual power was below 60 % of the station's potential power. The model is
 still only used once it beats raw Solcast. Result in the log (`History: ...`)
 and in `/data/dayahead_history_v1.json`; the previous model is kept as
-`pv_dayahead_model_v4.pre_history.pkl`. To run it again, delete the marker file
-or reinstall the add-on.
+`pv_dayahead_model_v4.pre_history.pkl`.
+
+Only history from the current plant/forecast setup is learned: a change of the
+Solcast rooftop sites (a site added or removed) is detected automatically, and
+`influxdb_history_start` (YYYY-MM-DD) lets you set the date of any other change
+(e.g. new panels, a changed site geometry or capacity at solcast.com). To run it
+again, delete `/data/dayahead_history_v2.json` or reinstall the add-on.
 
 ## 7. Building thermal model for EMHASS
 

@@ -44,7 +44,7 @@ from pv_model import (
 
 log = logging.getLogger("history")
 
-MARKER_PATH = Path("/data/dayahead_history_v1.json")
+MARKER_PATH = Path("/data/dayahead_history_v2.json")   # v2: only history after the last Solcast site change
 BACKUP_PATH = DAYAHEAD_MODEL_PATH.with_suffix(".pre_history.pkl")
 MAX_DAYS = 90                  # older history is not used
 BUCKET = timedelta(minutes=5)
@@ -52,6 +52,7 @@ MIN_BUCKETS = 4                # of 6 five-minute buckets per slot with a readin
 CURTAIL_MIN_POTENTIAL_W = 300.0
 CURTAIL_RATIO = 0.6            # actual < 60 % of the station potential -> treated as curtailed
 
+_SITE_FIELD_RE = re.compile(r"^[0-9a-f]{4}(_[0-9a-f]{4}){3}$")   # Solcast per-site attribute (resource id)
 _DT_RE = re.compile(
     r"datetime\.datetime\((\d+(?:,\s*\d+){2,6})"
     r"(?:,\s*tzinfo=(zoneinfo\.ZoneInfo\(key='[^']+'\)|datetime\.timezone\.utc|[A-Za-z_.]+\([^()]*\)|[A-Za-z_.]+))?\)")
@@ -141,6 +142,34 @@ def _slot_mean(buckets, slot_start):
     return sum(vals) / len(vals) if len(vals) >= MIN_BUCKETS else None
 
 
+def _solcast_config_start(influx, entity_id, meas):
+    """Time of the last Solcast configuration change seen in the history.
+
+    The Solcast integration adds one attribute per rooftop site (named after
+    the site's resource id). A site appearing or disappearing means the
+    forecast was produced for a different plant -- older history must not be
+    learned (it would teach a bias that no longer exists)."""
+    series = influx.query(f"SHOW FIELD KEYS FROM {_ident(meas)}")
+    keys = [row[0] for s in series or [] for row in s.get("values", []) if _SITE_FIELD_RE.match(str(row[0]))]
+    spans = {}
+    for k in keys:
+        span = []
+        for fn in ("first", "last"):
+            res = influx.query(f"SELECT {fn}({_ident(k)}) FROM {_ident(meas)} WHERE entity_id = {_q(_obj(entity_id))}")
+            vals = [row[0] for s in res or [] for row in s.get("values", [])]
+            span.append(int(vals[0]) if vals else None)
+        if span[0] is not None:
+            spans[k] = span
+    if not spans:
+        return None, []
+    newest = max(last for _first, last in spans.values())
+    start = None
+    for first, last in spans.values():
+        t = first if last >= newest - 86400 else last      # site added -> its first value; removed -> its last value
+        start = t if start is None else max(start, t)
+    return datetime.fromtimestamp(start, timezone.utc), sorted(spans)
+
+
 def _first_own_slot(influx):
     series = influx.query("SELECT first(target_mean_w) FROM ml_layer_pv_slot")
     if series is None:
@@ -176,7 +205,7 @@ def _history_samples(influx, cfg, station, since, until, stats):
                 rows = parse_solcast(parse_forecast_field(text, tz), None)
                 if rows:
                     snaps.append((int(t), {int(r[0].timestamp()): r for r in rows}))
-        snaps.sort(key=lambda x: x[0])
+        snaps = sorted((sn for sn in snaps if sn[0] >= int(since.timestamp())), key=lambda x: x[0])
         if snaps:
             actual = _buckets(influx, cfg.pv_actual_power, d0, d1)
             fallback = _buckets(influx, cfg.pv_actual_power_fallback, d0, d1) if cfg.pv_actual_power_fallback else {}
@@ -185,7 +214,7 @@ def _history_samples(influx, cfg, station, since, until, stats):
             irr = _buckets(influx, cfg.pv_irradiance, d0, d1) if cfg.pv_irradiance else {}
             curt = _buckets(influx, cfg.pv_curtailed, d0, d1) if cfg.pv_curtailed else {}
             starts = [d0 + i * SLOT for i in range(int((d1 - d0) / SLOT))]
-            starts = [s for s in starts if s + SLOT <= until]
+            starts = [s for s in starts if s >= since and s + SLOT <= until]
             mids = [s + SLOT_MID for s in starts]
             ghi, elev, azi = solar_position(mids) if mids else ([], [], [])
             for s0, m, g, e, a in zip(starts, mids, ghi, elev, azi):
@@ -251,16 +280,25 @@ def learn_from_history(influx, cfg, station, current, now=None):
         log.warning("History: InfluxDB not readable, trying again at the next start")
         return current
     until = cutoff or now
-    samples = _history_samples(influx, cfg, station, now - timedelta(days=MAX_DAYS), until, stats)
-    own = _own_samples(influx, cutoff) if cutoff else []
+    since = now - timedelta(days=MAX_DAYS)
+    meta = _meta(influx, cfg.pv_solcast_today, lambda f: "detailedforecast" in f.lower())
+    config_start, sites = _solcast_config_start(influx, cfg.pv_solcast_today, meta[0]) if meta else (None, [])
+    if config_start is not None and config_start > since:
+        since = config_start
+    if cfg.influx_history_start is not None and cfg.influx_history_start > since:
+        since = cfg.influx_history_start
+    log.info("History: Solcast sites in history %s, last configuration change %s -> learning from %s",
+             sites or "-", config_start.isoformat() if config_start else "-", since.isoformat())
+    samples = _history_samples(influx, cfg, station, since, until, stats) if since < until else []
+    own = _own_samples(influx, max(cutoff, since)) if cutoff else []
     if stats["reason"] == "InfluxDB query failed":
         log.warning("History: InfluxDB query failed, trying again at the next start")
         return current
     all_samples = sorted(samples + own, key=lambda s: s[0])
-    result = {"date": now.isoformat(), "history_slots": len(samples), "own_slots": len(own),
+    result = {"date": now.isoformat(), "since": since.isoformat(), "history_slots": len(samples), "own_slots": len(own),
               "skipped_no_forecast": stats["no_forecast"], "skipped_no_actual": stats["no_actual"],
               "skipped_curtailed": stats["curtailed"], "reason": stats["reason"]}
-    if len(samples) == 0:
+    if len(samples) + len(own) == 0:
         log.info("History: nothing to learn (%s) - live learning continues", stats["reason"] or "no usable slots")
         MARKER_PATH.write_text(json.dumps(result))
         return current
@@ -272,7 +310,10 @@ def learn_from_history(influx, cfg, station, current, now=None):
         fresh.learn_slot(x, y)
     tmp.unlink(missing_ok=True)
     if DAYAHEAD_MODEL_PATH.exists():
-        DAYAHEAD_MODEL_PATH.replace(BACKUP_PATH)
+        if BACKUP_PATH.exists():          # keep the oldest (pre-history) model as the backup
+            DAYAHEAD_MODEL_PATH.unlink()
+        else:
+            DAYAHEAD_MODEL_PATH.replace(BACKUP_PATH)
     fresh.path = DAYAHEAD_MODEL_PATH
     fresh.save()
     result.update({"first_slot": all_samples[0][0].isoformat(), "last_slot": all_samples[-1][0].isoformat(),

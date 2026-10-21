@@ -98,3 +98,6 @@ configuration:
   influxdb_learn_from_history:
     name: Learn from InfluxDB history
     description: Once at start, rebuild the day-ahead model from the Solcast curves and PV power stored in InfluxDB by Home Assistant's InfluxDB integration (up to 90 days), so it does not have to wait weeks of live slots. Curtailed slots are skipped. Runs only once; the old model is kept.
+  influxdb_history_start:
+    name: Learn history from (date)
+    description: Optional, YYYY-MM-DD. History before this date is not learned - set it to the day you last changed your PV plant or forecast setup. A change of the Solcast rooftop sites is detected automatically.
