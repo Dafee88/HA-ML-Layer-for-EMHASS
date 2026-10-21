@@ -103,11 +103,17 @@ class Config:
                 "temp": _entity(fl, "temperature_sensor", "", problems),
                 "heat_switch": _entity(fl, "heating_switch", "", problems),
                 "climate": _entity(fl, "climate", "", problems),
+                "power": _entity(fl, "heating_power_sensor", "", problems),
             }
-            if not name or not entry["temp"] or not (entry["heat_switch"] or entry["climate"]):
-                problems.append(f"thermal_floors[{i}]: needs name, temperature_sensor and heating_switch or climate")
+            if not name or not entry["temp"] or not (entry["heat_switch"] or entry["climate"] or entry["power"]):
+                problems.append(f"thermal_floors[{i}]: needs name, temperature_sensor and one of "
+                                "heating_switch, heating_power_sensor or climate")
                 continue
             self.thermal_floors.append(entry)
+
+        self.thermal_heating_power_threshold_w = float(opts.get("thermal_heating_power_threshold_w", 100) or 100)
+        npw = opts.get("thermal_nominal_power_w")
+        self.thermal_nominal_power_w = float(npw) if npw not in (None, "") and float(npw) > 0 else None
 
         # --- InfluxDB (v1 HTTP API, e.g. the InfluxDB add-on) ---
         self.influx_enabled = bool(opts.get("influxdb_enabled", False))

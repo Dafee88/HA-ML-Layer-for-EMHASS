@@ -54,6 +54,15 @@ unless you set them.
 
 Until a model has learned enough and beats its baseline, raw Solcast is passed
 through unchanged.
+- `sensor.pv_ml_forecast_tomorrow_kwh` and `sensor.pv_ml_forecast_today_remaining_kwh`
+  – energy in kWh (for EMHASS `soc_final` or a battery reserve). Attribute
+  `source`: `ml` (model active), `solcast` (raw Solcast), `station` (no Solcast
+  data – weather-station estimate from typical cloudiness only, use with care),
+  `none` (state `unknown`). `solcast_kwh` for comparison.
+- `sensor.building_thermal_emhass` – `cooling_constant` and `heating_rate` in
+  EMHASS units, attribute `valid` (see section 7).
+
+After a Home Assistant restart all sensors are written again within one minute.
 
 ## 4. EMHASS: pass the curve
 
@@ -107,3 +116,30 @@ tomorrow's forecast). HTTP 401 in the log means the login is wrong.
 At start the add-on logs, read-only, which history of your configured sensors
 exists in InfluxDB (`InfluxDB history: ...` lines: measurement, first/last
 value, fields, and whether Solcast's 30-min curve is stored).
+
+## 7. Building thermal model for EMHASS
+
+The add-on learns the parameters of EMHASS' thermal model
+(<https://emhass.readthedocs.io/en/stable/thermal_model.html>):
+
+- `cooling_constant` (per hour per degree difference) from heating-off phases of
+  at least 3 h (3 h lock-out after the heating switched off), with a straight-line
+  fit through all readings – short windows are useless with 0.1 K sensors.
+- `heating_rate` (K/h at nominal power) from a daily energy balance between two
+  heating-off rest periods; days with noticeable sun are skipped. Needs
+  `thermal_nominal_power_w` (the P_nom of the heating load in EMHASS) and,
+  ideally, `heating_power_sensor` per floor.
+
+`sensor.building_thermal_emhass` becomes `valid` after at least 3 usable cooling
+phases and 3 heating balances per floor. Use the values only when valid, e.g.
+inside your `def_load_config` / `thermal_config`:
+
+```jinja
+{% set t = states.sensor.building_thermal_emhass %}
+{% set ok = t is not none and t.attributes.valid %}
+"heating_rate": {{ t.attributes.heating_rate if ok else 2.0 }},
+"cooling_constant": {{ t.attributes.cooling_constant if ok else 0.005 }},
+```
+
+(2.0 / 0.005 stand for your current fixed values.)
+

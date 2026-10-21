@@ -64,7 +64,13 @@ configuration:
     description: Optional input_select; heating counts as on for a floor whose name equals its state. Leave empty if you have none.
   thermal_floors:
     name: Floors
-    description: One entry per floor - name (lower case), temperature_sensor, and either heating_switch (on/off) or climate (uses hvac_action).
+    description: One entry per floor - name (lower case), temperature_sensor, and one heating signal - heating_switch (on/off), heating_power_sensor (W, on above the threshold; also used for the energy balance) or climate (hvac_action).
+  thermal_heating_power_threshold_w:
+    name: Heating power threshold (W)
+    description: Optional, default 100. With heating_power_sensor, heating counts as on above this power.
+  thermal_nominal_power_w:
+    name: Heating nominal power (W)
+    description: Optional. Nominal power of the heating load as configured in EMHASS (P_nom). Needed to publish heating_rate in EMHASS units (sensor.building_thermal_emhass).
   influxdb_enabled:
     name: Write to InfluxDB
     description: Store every cycle, every finished 30-min slot and an evening snapshot of tomorrow's forecast. Needed for backtests.

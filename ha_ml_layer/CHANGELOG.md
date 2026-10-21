@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.6.0 — 2026-10-21
+
+Das Gebäudemodell lernt nach dem Update neu (`/data/building_thermal_v2.json`);
+die alten Werte aus 60-min-Fenstern waren durch die Sensorauflösung zu ungenau.
+
+### Für EMHASS
+- Neu: `sensor.pv_ml_forecast_tomorrow_kwh` und `sensor.pv_ml_forecast_today_remaining_kwh`
+  (für `soc_final` / Akku-Reserve), mit `source` (`ml`, `solcast`, `station`, `none`)
+  und `solcast_kwh` zum Vergleich.
+- Neu: `sensor.building_thermal_emhass` mit `cooling_constant` und `heating_rate`
+  in EMHASS-Einheiten und `valid`-Flag.
+- Nach einem Home-Assistant-Neustart werden alle Sensoren binnen einer Minute neu
+  geschrieben (vorher bis zu einem Poll-Intervall, Standard 5 min).
+
+### Gebäudemodell
+- Abkühlkonstante aus Abkühlphasen ≥ 3 h mit Ausgleichsgerade, 3 h Sperre nach
+  dem Abschalten der Heizung, Qualitätsprüfung (Temperaturänderung, R²).
+- Heizrate aus einer Tages-Energiebilanz (Ruhephase zu Ruhephase), normiert auf
+  die Nennleistung (`thermal_nominal_power_w`); sonnige Tage werden übersprungen.
+- Heizsignal auch über einen Leistungssensor (`heating_power_sensor`, Schwelle
+  `thermal_heating_power_threshold_w`).
+- Simulation (Haus mit k = 0,005/h, 2,0 K/h bei 1500 W, Fußbodenheizung mit 1,5 h
+  Verzögerung, 0,1-K-Sensor): gelernt 0,00484/h und 1,94 K/h. Das alte Verfahren
+  über die Heizphase hätte 1,55 K/h (−23 %) ergeben.
+
+### Sonstiges
+- Log-Meldungen des HA-Clients auf Englisch.
+
 ## 0.5.2 — 2026-10-21
 
 ### InfluxDB

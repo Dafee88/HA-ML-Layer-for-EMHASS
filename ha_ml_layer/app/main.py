@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo
 
 from config import Config
 from ecowitt_model import StationModel, csi, local_hour, plant_features
-from ha_client import HAClient
+from ha_client import HAClient, Publisher
 from influx import InfluxWriter, line
 from pv_model import (
     ENTITY_OUTPUT_CORRECTED,
@@ -27,7 +27,11 @@ from pv_model import (
     set_location,
     solar_position,
 )
-from building_thermal import BuildingThermalModel
+from building_thermal import EMHASS_SENSOR, BuildingThermalModel
+
+ENTITY_TOMORROW_KWH = "sensor.pv_ml_forecast_tomorrow_kwh"
+ENTITY_TODAY_REMAINING_KWH = "sensor.pv_ml_forecast_today_remaining_kwh"
+WATCH_INTERVAL_S = 60
 
 SOURCE_TEXT = "ha-ml-layer / day-ahead (Solcast + second provider) + station nowcast/fallback"
 
@@ -59,6 +63,44 @@ def _sum_states(states, entities):
         return None
     vals = [_safe_float(states.get(e)) for e in entities]
     return None if any(v is None for v in vals) else sum(vals)
+
+
+def daily_energy(rows, now, slot0, tz, today, tomorrow, dayahead, day_ctx, station, tz_name):
+    """kWh for tomorrow and for the rest of today.
+
+    Solcast slots go through the day-ahead model (= raw Solcast while the model
+    is gated off). Without Solcast slots for tomorrow, the station estimate
+    (typical cloudiness only - weak) is used and flagged source=station."""
+    out = {}
+    for key, day in (("today_remaining", today), ("tomorrow", tomorrow)):
+        sel = [r for r in rows if r[0].astimezone(tz).date() == day and r[0] + SLOT > now]
+        if sel:
+            mids = [r[0] + SLOT_MID for r in sel]
+            ghi, elev, _azi = solar_position(mids)
+            ml_kwh = sc_kwh = 0.0
+            for (s0, p50, p10, p90), m, g, e in zip(sel, mids, ghi, elev):
+                # the running slot only counts with its remaining share
+                share = 1.0 if s0 >= now else max((s0 + SLOT - now) / SLOT, 0.0)
+                v = dayahead.predict_or_solcast(dayahead_features(m, p50, p10, p90, g, e, day_ctx(s0)))
+                ml_kwh += v * 0.5 / 1000.0 * share
+                sc_kwh += p50 * 0.5 / 1000.0 * share
+            out[key] = {"kwh": ml_kwh, "solcast_kwh": sc_kwh, "slots": len(sel),
+                        "source": "ml" if dayahead.active else "solcast"}
+            continue
+        kwh, n = None, 0
+        if station is not None and station.ready:
+            day_start = datetime(day.year, day.month, day.day, tzinfo=tz).astimezone(timezone.utc)
+            slots = [day_start + i * SLOT for i in range(48)]
+            slots = [s for s in slots if s + SLOT > now]
+            mids = [s + SLOT_MID for s in slots]
+            ghi, elev, azi = solar_position(mids) if mids else ([], [], [])
+            vals = [station.fallback(m, g, e, a, local_hour(m, tz_name), None, 99.0)
+                    for m, g, e, a in zip(mids, ghi, elev, azi)]
+            if vals and all(v is not None for v in vals):
+                kwh, n = sum(vals) * 0.5 / 1000.0, len(vals)
+        out[key] = {"kwh": kwh, "solcast_kwh": None, "slots": n,
+                    "source": "station" if kwh is not None else "none"}
+    return out
 
 
 def pv_cycle(ha, cfg, dayahead, nowcast, slot_acc, log, influx=None, snapshot=None, station=None):
@@ -266,6 +308,24 @@ def pv_cycle(ha, cfg, dayahead, nowcast, slot_acc, log, influx=None, snapshot=No
         station.n_ratio if station else 0, station.ready if station else False,
     )
 
+    # --- daily energy for EMHASS soc_final / battery reserve -------------------
+    tomorrow = today + timedelta(days=1)
+    energy = daily_energy(rows, now, starts[0], tz, today, tomorrow, dayahead, day_ctx, station, cfg.timezone)
+    for entity, key, name, sec in (
+            (ENTITY_TOMORROW_KWH, "tomorrow", "PV Forecast Tomorrow (ML)", secondary_day.get(tomorrow)),
+            (ENTITY_TODAY_REMAINING_KWH, "today_remaining", "PV Forecast Today Remaining (ML)", None)):
+        e = energy[key]
+        ha.set_state(entity, "unknown" if e["kwh"] is None else round(e["kwh"], 2), attributes={
+            "unit_of_measurement": "kWh",
+            "device_class": "energy",
+            "friendly_name": name,
+            "source": e["source"],
+            "solcast_kwh": _r(e["solcast_kwh"], 2),
+            "secondary_kwh": _r(sec, 2) if key == "tomorrow" else None,
+            "slots": e["slots"],
+            "model_active": dayahead.active,
+        })
+
     if influx is None:
         return
     influx.write([line("ml_layer_pv", {
@@ -295,6 +355,9 @@ def pv_cycle(ha, cfg, dayahead, nowcast, slot_acc, log, influx=None, snapshot=No
         "nowcast_active": nowcast.active,
         "fallback_slots": n_station,
         "forecast_source": forecast_source,
+        "tomorrow_kwh": _r(energy["tomorrow"]["kwh"], 2),
+        "tomorrow_solcast_kwh": _r(energy["tomorrow"]["solcast_kwh"], 2),
+        "today_remaining_kwh": _r(energy["today_remaining"]["kwh"], 2),
     }, ts=now)])
 
     # once per evening: what EMHASS plans with for tomorrow (raw forecasts + ML curve)
@@ -357,7 +420,8 @@ def run():
         log.info("All models disabled (add-on option), exiting.")
         return
 
-    ha = HAClient(cfg.ha_url, cfg.token)
+    ha = Publisher(HAClient(cfg.ha_url, cfg.token),
+                   ENTITY_OUTPUT_CURVE if cfg.pv_enabled else EMHASS_SENSOR)
     if None in (cfg.latitude, cfg.longitude, cfg.timezone):
         while True:
             try:
@@ -388,20 +452,28 @@ def run():
              station is not None, bool(cfg.pv_secondary_today), bool(cfg.pv_curtailed),
              bool(cfg.pv_reference_irradiance), cfg.latitude, cfg.longitude, cfg.timezone)
 
+    next_cycle = time.monotonic()
     while True:
-        if thermal is not None:
-            try:
-                thermal.update(ha)
-            except Exception:
-                log.exception("Error in building_thermal cycle, retrying next interval.")
+        if time.monotonic() >= next_cycle:
+            next_cycle = time.monotonic() + cfg.poll_interval
+            if thermal is not None:
+                try:
+                    thermal.update(ha)
+                except Exception:
+                    log.exception("Error in building_thermal cycle, retrying next interval.")
 
-        if dayahead is not None:
+            if dayahead is not None:
+                try:
+                    pv_cycle(ha, cfg, dayahead, nowcast, slot_acc, log, influx, snapshot, station)
+                except Exception:
+                    log.exception("Error in PV cycle, retrying next interval.")
+        else:
+            # between cycles: bring the sensors back right after an HA restart
             try:
-                pv_cycle(ha, cfg, dayahead, nowcast, slot_acc, log, influx, snapshot, station)
+                ha.ensure()
             except Exception:
-                log.exception("Error in PV cycle, retrying next interval.")
-
-        time.sleep(cfg.poll_interval)
+                log.exception("Error while checking the published sensors")
+        time.sleep(max(1.0, min(WATCH_INTERVAL_S, next_cycle - time.monotonic())))
 
 
 if __name__ == "__main__":

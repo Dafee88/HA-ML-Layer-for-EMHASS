@@ -1,5 +1,5 @@
 name: "HA ML Layer for EMHASS"
-version: "0.5.2"
+version: "0.6.0"
 slug: "ha_ml_layer"
 description: "Online-Learning-Schicht (River) für EMHASS: PV-Prognose-Korrektur und Gebäude-Wärmemodell"
 url: "https://github.com/Dafee88/HA-ML-Layer-for-EMHASS"
@@ -57,7 +57,10 @@ schema:
     - name: str
       temperature_sensor: str
       heating_switch: str?
+      heating_power_sensor: str?
       climate: str?
+  thermal_heating_power_threshold_w: float(0,)?
+  thermal_nominal_power_w: float(0,)?
   influxdb_enabled: bool
   influxdb_host: str
   influxdb_port: port

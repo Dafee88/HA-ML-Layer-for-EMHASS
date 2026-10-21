@@ -12,7 +12,8 @@ Enthalten sind zwei Modelle:
 | Modell | Add-on-Option | Ausgabe |
 |---|---|---|
 | PV-Prognose-Korrektur (Day-Ahead + Nowcast) | `pv_enabled` | `sensor.pv_ml_corrected_forecast`, `sensor.pv_ml_corrected_forecast_curve` |
-| Gebäude-Wärmemodell (pro Etage) | `thermal_enabled` | `sensor.building_thermal_<etage>` |
+| Gebäude-Wärmemodell (pro Etage) | `thermal_enabled` | `sensor.building_thermal_<etage>`, `sensor.building_thermal_emhass` |
+| PV-Energie heute/morgen | `pv_enabled` | `sensor.pv_ml_forecast_today_remaining_kwh`, `sensor.pv_ml_forecast_tomorrow_kwh` |
 
 ### Vorher installieren
 
@@ -159,15 +160,22 @@ Optional gilt eine Etage auch als beheizt, wenn `thermal_heating_stage` (ein
 `input_select`) ihren Namen als Zustand hat. Außentemperatur: `thermal_outdoor_temp`,
 optional `thermal_outdoor_temp_fallback`.
 
-Ein Lernfenster dauert mindestens 60 min bei unverändertem Heizzustand. Es wird
-verworfen, wenn
-- das Polling eine Lücke hatte (Add-on-Neustart, HA nicht erreichbar),
-- die Einstrahlung über 50 W/m² lag (Solargewinne verfälschen k und h),
-- beim Abkühlen die Differenz innen/außen unter 3 K lag.
+Gelernt wird in den Einheiten des EMHASS-Wärmemodells:
+- **Abkühlkonstante** aus Abkühlphasen von mindestens 3 h (3 h Sperre nach dem
+  Abschalten der Heizung), Ausgleichsgerade über alle Messwerte, nur bei
+  ≥ 3 K Innen/außen-Differenz, ≥ 0,3 K Temperaturänderung und R² ≥ 0,5.
+  Kurze Fenster taugen bei 0,1-K-Sensoren nicht: über 60 min wäre allein die
+  Auflösung so groß wie der Wert.
+- **Heizrate** aus einer Tages-Energiebilanz (Ruhephase zu Ruhephase, ≥ 18 h),
+  normiert auf die Nennleistung (`thermal_nominal_power_w`). Die Verzögerung einer
+  Fußbodenheizung gleicht sich über den Tag aus. Sonnige Tage (> 1 kWh/m²)
+  werden übersprungen, weil EMHASS keine Solargewinne modelliert.
+- Heizsignal pro Etage: Schalter, Leistungssensor (über Schwelle) oder Thermostat.
 
-Werte werden per gleitendem Mittel (α = 0,1) geglättet und in
-`/data/building_thermal.json` gespeichert. Der Sensorzustand ist `calibrated`
-ab 10 Abkühl- und 5 Heiz-Samples, vorher `learning`.
+Werte werden geglättet und in `/data/building_thermal_v2.json` gespeichert.
+`sensor.building_thermal_emhass` (Mittel über die Etagen) wird `valid` nach je
+3 Abkühlphasen und 3 Bilanzen pro Etage. Simulation: wahr 0,005/h und 2,0 K/h,
+gelernt 0,00484/h und 1,94 K/h.
 
 ---
 
@@ -236,9 +244,8 @@ Solcast unverändert durchgereicht, danach übernimmt das Modell, sobald
   (`pv_curtailed_entity`). Je genauer sie den Zeitraum trifft, desto besser.
 - **Zweite Prognose nur als Tageswert:** Forecast.Solar liefert in Home Assistant
   keine 30-min-Kurve als Attribut; deshalb gehen Tagessummen als Merkmal ein.
-- **Wärmemodell:** Träge Heizungen wirken stundenlang nach. Besser wären
-  2–3 h Sperrzeit nach dem Umschalten (z. B. bei Fußbodenheizung) und eine Regressionsgerade über das ganze
-  Fenster statt zweier Endpunkte (Sensorauflösung 0,1 K).
+- **Wärmemodell:** ein Modell pro Etage, EMHASS bekommt den Mittelwert. Ohne
+  Leistungssensor wird während der Heizzeit die Nennleistung angenommen.
 - **InfluxDB nur schreibend:** Gelesen wird über die HA-REST-API. Ein Backfill
   aus InfluxDB würde den Kaltstart verkürzen.
 - **Nur Anzeige:** Die Modelle ändern keine EMHASS-Konfiguration selbst. Die
