@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.6.1 — 2026-10-21
+
+### Lernen aus der InfluxDB-Historie
+- Neu (Option `influxdb_learn_from_history`, Standard an): Beim ersten Start baut
+  das Add-on das Day-ahead-Modell einmalig aus der InfluxDB-Historie neu auf –
+  Solcast-30-min-Kurven (`detailedForecast`, wie von der HA-InfluxDB-Integration
+  gespeichert) und PV-Leistung der letzten bis zu 90 Tage, danach die eigenen
+  Slot-Datensätze (`ml_layer_pv_slot`), in zeitlicher Reihenfolge. Damit muss das
+  Modell nicht wochenlang live Slots sammeln.
+- Je Slot wird die letzte vor Slot-Ende gespeicherte Solcast-Kurve verwendet –
+  dieselben Werte, mit denen auch live gelernt wird.
+- Abgeregelte Slots werden übersprungen: Abregelungs-Indikator an, oder (mit
+  Wetterstation) Ist-Leistung unter 60 % der Stations-Potenzialleistung.
+- Die MAE-Schranke gilt unverändert: das Modell ersetzt Solcast nur, wenn es
+  nachweislich besser ist. Altes Modell bleibt als `*.pre_history.pkl` erhalten,
+  Ergebnis in `/data/dayahead_history_v1.json` und im Log (`History: ...`).
+- Test gegen eine echte InfluxDB 1.x mit Daten im Format der HA-Integration
+  (Python-Darstellung mit `datetime`/`ZoneInfo`, wie live in InfluxDB gesehen):
+  30 Tage, 541 Historien- + 57 eigene Slots, 35 abgeregelte Slots übersprungen.
+
+### Sonstiges
+- Add-on-Beschreibung auf Englisch.
+
 ## 0.6.0 — 2026-10-21
 
 Das Gebäudemodell lernt nach dem Update neu (`/data/building_thermal_v2.json`);

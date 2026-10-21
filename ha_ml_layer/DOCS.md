@@ -117,6 +117,18 @@ At start the add-on logs, read-only, which history of your configured sensors
 exists in InfluxDB (`InfluxDB history: ...` lines: measurement, first/last
 value, fields, and whether Solcast's 30-min curve is stored).
 
+**Learning from history** (`influxdb_learn_from_history`, on by default): if
+Home Assistant's InfluxDB integration stores your Solcast sensor (including the
+`detailedForecast` attribute) and your PV power, the add-on rebuilds the
+day-ahead model once at start from up to 90 days of history plus its own slot
+records (`ml_layer_pv_slot`), in time order. Curtailed slots are skipped: where
+the curtailment indicator was on, and - with a weather station - where the
+actual power was below 60 % of the station's potential power. The model is
+still only used once it beats raw Solcast. Result in the log (`History: ...`)
+and in `/data/dayahead_history_v1.json`; the previous model is kept as
+`pv_dayahead_model_v4.pre_history.pkl`. To run it again, delete the marker file
+or reinstall the add-on.
+
 ## 7. Building thermal model for EMHASS
 
 The add-on learns the parameters of EMHASS' thermal model

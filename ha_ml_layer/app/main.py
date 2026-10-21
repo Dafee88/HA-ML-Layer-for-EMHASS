@@ -28,6 +28,7 @@ from pv_model import (
     solar_position,
 )
 from building_thermal import EMHASS_SENSOR, BuildingThermalModel
+from history import learn_from_history
 
 ENTITY_TOMORROW_KWH = "sensor.pv_ml_forecast_tomorrow_kwh"
 ENTITY_TODAY_REMAINING_KWH = "sensor.pv_ml_forecast_today_remaining_kwh"
@@ -444,6 +445,11 @@ def run():
                               cfg.influx_username, cfg.influx_password, cfg.influx_ssl)
         log.info("InfluxDB enabled: %s", influx.describe())
         log_influx_inventory(influx, cfg, log)
+        if dayahead is not None and cfg.influx_learn_history:
+            try:
+                dayahead = learn_from_history(influx, cfg, station, dayahead)
+            except Exception:
+                log.exception("History: learning from InfluxDB failed, live learning continues")
     snapshot = {}
 
     log.info("ha-ml-layer started. Poll interval: %ss | pv=%s thermal=%s influx=%s station=%s "

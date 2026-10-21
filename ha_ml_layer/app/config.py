@@ -124,6 +124,7 @@ class Config:
         self.influx_username = opts.get("influxdb_username") or None
         self.influx_password = opts.get("influxdb_password") or None
         self.influx_snapshot_hour = int(opts.get("influxdb_dayahead_snapshot_hour", 20))
+        self.influx_learn_history = bool(opts.get("influxdb_learn_from_history", True))
 
         if self.pv_enabled and not (self.pv_solcast_today and self.pv_solcast_tomorrow and self.pv_actual_power):
             problems.append("PV model needs pv_solcast_today, pv_solcast_tomorrow and pv_actual_power")

@@ -262,8 +262,8 @@ class _ResidualRegressor:
 class DayAheadModel(_ResidualRegressor):
     """Baseline = Solcast P50 of the slot."""
 
-    def __init__(self):
-        super().__init__(DAYAHEAD_MODEL_PATH, n_models=10, min_samples=MIN_SAMPLES_DAYAHEAD,
+    def __init__(self, path=DAYAHEAD_MODEL_PATH):
+        super().__init__(path, n_models=10, min_samples=MIN_SAMPLES_DAYAHEAD,
                          window=ROLLING_DAYAHEAD)
 
     def predict_or_solcast(self, x):

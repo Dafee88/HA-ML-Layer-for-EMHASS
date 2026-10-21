@@ -1,7 +1,7 @@
 name: "HA ML Layer for EMHASS"
-version: "0.6.0"
+version: "0.6.1"
 slug: "ha_ml_layer"
-description: "Online-Learning-Schicht (River) für EMHASS: PV-Prognose-Korrektur und Gebäude-Wärmemodell"
+description: "Online-learning layer (River) for EMHASS: PV forecast correction and building thermal model"
 url: "https://github.com/Dafee88/HA-ML-Layer-for-EMHASS"
 arch:
   - aarch64
@@ -31,6 +31,7 @@ options:
   influxdb_ssl: false
   influxdb_database: "homeassistant"
   influxdb_dayahead_snapshot_hour: 20
+  influxdb_learn_from_history: true
 schema:
   ha_url: str
   poll_interval_seconds: int(60,3600)
@@ -69,6 +70,7 @@ schema:
   influxdb_username: str?
   influxdb_password: password?
   influxdb_dayahead_snapshot_hour: int(0,23)
+  influxdb_learn_from_history: bool?
 ingress: false
 hassio_api: true
 homeassistant_api: true

@@ -95,3 +95,6 @@ configuration:
   influxdb_dayahead_snapshot_hour:
     name: Snapshot hour
     description: Local hour from which tomorrow's forecast is saved once per day (20 = before the EMHASS day-ahead run at 20:05).
+  influxdb_learn_from_history:
+    name: Learn from InfluxDB history
+    description: Once at start, rebuild the day-ahead model from the Solcast curves and PV power stored in InfluxDB by Home Assistant's InfluxDB integration (up to 90 days), so it does not have to wait weeks of live slots. Curtailed slots are skipped. Runs only once; the old model is kept.
