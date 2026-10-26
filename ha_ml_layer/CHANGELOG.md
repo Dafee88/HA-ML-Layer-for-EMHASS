@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.6.3 — 2026-10-26
+
+### Fix: Zeitumstellung
+- In der Nacht der Zeitumstellung (25.10.2026) brach der PV-Zyklus rund 70 min lang
+  bei der kWh-Berechnung ab („Tz-aware datetime.datetime cannot be converted …“):
+  Die Solcast-Slots desselben Tages hatten gemischte Offsets (+02:00 / +01:00).
+  Die 48-Slot-Kurve für EMHASS wurde weiter geschrieben; es fehlten in dieser Zeit
+  die kWh-Sensoren und die InfluxDB-Zyklusdaten.
+- Sonnenstand/Clear-Sky rechnen jetzt immer in UTC. Getestet mit den Slots
+  02:30 +02:00 und 02:00 +01:00 vom 25.10.; Simulation unverändert.
+
 ## 0.6.2 — 2026-10-21
 
 ### Fix: Historie nur aus der aktuellen Solcast-Einrichtung

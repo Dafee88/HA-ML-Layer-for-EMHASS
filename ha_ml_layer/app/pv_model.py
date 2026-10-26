@@ -84,12 +84,16 @@ def set_location(latitude, longitude, tz):
 
 
 # --- Solar geometry ----------------------------------------------------------
+def _utc_index(timestamps):
+    """DatetimeIndex in UTC. Solcast slots carry their local offset, so around a
+    DST change one list mixes +02:00 and +01:00 - pandas refuses that unless
+    everything is converted to UTC (seen live 25.10.2026). Naive = UTC."""
+    times = pd.to_datetime(list(timestamps), utc=True)
+    return pd.DatetimeIndex(times)
 def solar_geometry(timestamps):
     """Clear-sky GHI (Ineichen) and apparent solar elevation for a list of
     timezone-aware datetimes, in one pvlib call."""
-    times = pd.DatetimeIndex(timestamps)
-    if times.tz is None:
-        times = times.tz_localize("UTC")
+    times = _utc_index(timestamps)
     clearsky = _LOCATION.get_clearsky(times, model="ineichen")
     solpos = _LOCATION.get_solarposition(times)
     return list(clearsky["ghi"].values), list(solpos["apparent_elevation"].values)
@@ -97,9 +101,7 @@ def solar_geometry(timestamps):
 
 def solar_position(timestamps):
     """Like solar_geometry, plus the solar azimuth (degrees from north)."""
-    times = pd.DatetimeIndex(timestamps)
-    if times.tz is None:
-        times = times.tz_localize("UTC")
+    times = _utc_index(timestamps)
     clearsky = _LOCATION.get_clearsky(times, model="ineichen")
     solpos = _LOCATION.get_solarposition(times)
     return (list(clearsky["ghi"].values), list(solpos["apparent_elevation"].values),

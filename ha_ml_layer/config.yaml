@@ -1,5 +1,5 @@
 name: "HA ML Layer for EMHASS"
-version: "0.6.2"
+version: "0.6.3"
 slug: "ha_ml_layer"
 description: "Online-learning layer (River) for EMHASS: PV forecast correction and building thermal model"
 url: "https://github.com/Dafee88/HA-ML-Layer-for-EMHASS"
