@@ -61,6 +61,20 @@ through unchanged.
   `none` (state `unknown`). `solcast_kwh` for comparison.
 - `sensor.building_thermal_emhass` – `cooling_constant` and `heating_rate` in
   EMHASS units, attribute `valid` (see section 7).
+- `sensor.pv_ml_forecast_accuracy` – daily check: the forecast for a day as known
+  at the snapshot hour of the evening before (ML and raw Solcast, kWh) against the
+  measured PV energy. State = ML error of the last scored day in %; attributes
+  `actual_kwh`, `ml_kwh`, `solcast_kwh`, errors, `curtailed_h`, `low_output_h`,
+  mean absolute errors over 7 days and the daily `history`. Days with less than
+  90 % readings are not scored.
+
+**Low output (snow, shading, faults):** with a weather station, PV power below
+50 % of the station's potential (potential at least 300 W) while not curtailed
+is not learned by the forecast models (attribute `low_output`). If such an
+episode starts at or below 4 °C outdoors (`thermal_outdoor_temp`, unknown counts
+as cold) it may be snow on the panels and the station model does not learn
+either; warm episodes are learned by the station's plant model (shading). After
+60 min a warning is logged.
 
 After a Home Assistant restart all sensors are written again within one minute.
 

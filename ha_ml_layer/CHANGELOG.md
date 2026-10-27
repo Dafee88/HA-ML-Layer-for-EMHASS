@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.7.0 — 2026-10-27
+
+### Neu: Prognose-Prüfung pro Tag
+- `sensor.pv_ml_forecast_accuracy`: Am Abend (Snapshot-Stunde, Standard 20 Uhr)
+  wird die Prognose für morgen notiert (ML und Solcast, kWh) – das, womit EMHASS
+  plant. Nach Mitternacht wird sie mit der gemessenen PV-Energie verglichen.
+  Zustand = ML-Abweichung des letzten Tages in %, Attribute u. a. Ist/ML/Solcast
+  in kWh, Abregelungs- und Minderertrags-Stunden, 7-Tage-Mittel beider Fehler,
+  Verlauf. Tage mit < 90 % Messwerten werden nicht bewertet.
+
+### Neu: Minderertrag erkennen (Schnee, Verschattung, Störung)
+- Liegt die PV-Leistung ohne Abregelung unter 50 % des Stations-Potenzials
+  (mind. 300 W Potenzial), lernen die Prognosemodelle diese Werte nicht – sonst
+  würde z. B. Schnee auf den Modulen als „Solcast zu hoch“ gelernt.
+- Beginnt so eine Phase bei ≤ 4 °C Außentemperatur (unbekannt zählt als kalt),
+  lernt auch das Stationsmodell nicht (möglicher Schnee); warme Phasen lernt das
+  Anlagenmodell (Verschattung). Nach 60 min Warnung im Log; Attribute `low_output`,
+  `low_output_snow_possible`, `low_output_since`.
+- Simulation (8 Novembertage, 2 Schneetage mit 5 % Ertrag): Stationsfaktor und
+  Modelle bleiben an den Schneetagen unverändert, danach normales Lernen; normale
+  Tage (Juni-Simulation) liefern exakt dieselben Ergebnisse wie 0.6.3.
+
 ## 0.6.3 — 2026-10-26
 
 ### Fix: Zeitumstellung

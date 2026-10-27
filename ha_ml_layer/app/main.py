@@ -29,10 +29,18 @@ from pv_model import (
 )
 from building_thermal import EMHASS_SENSOR, BuildingThermalModel
 from history import learn_from_history
+from accuracy import DailyAccuracy
 
 ENTITY_TOMORROW_KWH = "sensor.pv_ml_forecast_tomorrow_kwh"
 ENTITY_TODAY_REMAINING_KWH = "sensor.pv_ml_forecast_today_remaining_kwh"
 WATCH_INTERVAL_S = 60
+# PV far below the station's potential although not curtailed: snow on the
+# panels, shading, a fault. Such readings are not learned (they would teach
+# "Solcast is too high" or a too low W per W/m2 factor).
+LOW_OUTPUT_MIN_POTENTIAL_W = 300.0
+LOW_OUTPUT_RATIO = 0.5
+LOW_OUTPUT_WARN_S = 3600
+SNOW_MAX_TEMP_C = 4.0          # an episode that starts at or below this can be snow -> station does not learn either
 
 SOURCE_TEXT = "ha-ml-layer / day-ahead (Solcast + second provider) + station nowcast/fallback"
 
@@ -104,7 +112,8 @@ def daily_energy(rows, now, slot0, tz, today, tomorrow, dayahead, day_ctx, stati
     return out
 
 
-def pv_cycle(ha, cfg, dayahead, nowcast, slot_acc, log, influx=None, snapshot=None, station=None):
+def pv_cycle(ha, cfg, dayahead, nowcast, slot_acc, log, influx=None, snapshot=None, station=None,
+             accuracy=None, low=None):
     """One cycle (default 5 min).
 
     Primary: Solcast (+ optional second provider) corrected by the day-ahead
@@ -116,7 +125,8 @@ def pv_cycle(ha, cfg, dayahead, nowcast, slot_acc, log, influx=None, snapshot=No
     tz = ZoneInfo(cfg.timezone)
     wanted = [cfg.pv_solcast_today, cfg.pv_solcast_tomorrow, cfg.pv_actual_power,
               cfg.pv_actual_power_fallback, cfg.pv_irradiance, cfg.pv_curtailed,
-              cfg.pv_reference_irradiance] + cfg.pv_secondary_today + cfg.pv_secondary_tomorrow
+              cfg.pv_reference_irradiance, cfg.thermal_outdoor_temp, cfg.thermal_outdoor_temp_fallback] \
+        + cfg.pv_secondary_today + cfg.pv_secondary_tomorrow
     states = ha.get_states([e for e in wanted if e])
     now = datetime.now(timezone.utc)
 
@@ -164,16 +174,39 @@ def pv_cycle(ha, cfg, dayahead, nowcast, slot_acc, log, influx=None, snapshot=No
         irradiance = None
     curtailed = bool(cfg.pv_curtailed) and (states.get(cfg.pv_curtailed) or {}).get("state") == "on"
     reference = _safe_float(states.get(cfg.pv_reference_irradiance)) if cfg.pv_reference_irradiance else None
+    outdoor = _safe_float(states.get(cfg.thermal_outdoor_temp)) if cfg.thermal_outdoor_temp else None
+    if outdoor is None and cfg.thermal_outdoor_temp_fallback:
+        outdoor = _safe_float(states.get(cfg.thermal_outdoor_temp_fallback))
 
     # --- station: plant model, typical cloudiness, reference check ----------
     x_plant_now = potential_now = csi_now = None
     if station is not None and irradiance is not None and elev_now > 0:
         x_plant_now = plant_features(irradiance, ghi_now, elev_now, azi_now, now)
         potential_now = station.potential(x_plant_now)
+    low_output = (not curtailed and actual is not None and potential_now is not None
+                  and potential_now >= LOW_OUTPUT_MIN_POTENTIAL_W and actual < LOW_OUTPUT_RATIO * potential_now)
+    snow_possible = False
+    if low is not None:
+        if low_output:
+            if "since" not in low:
+                low["since"] = now
+                # unknown temperature counts as cold: better skip learning than learn snow
+                low["cold"] = outdoor is None or outdoor <= SNOW_MAX_TEMP_C
+            snow_possible = low["cold"]
+            if (now - low["since"]).total_seconds() >= LOW_OUTPUT_WARN_S and not low.get("warned"):
+                low["warned"] = True
+                log.warning("PV output far below the station potential for %d min (%.0f W vs %.0f W) - "
+                            "snow on the panels, shading or a fault? Not learned meanwhile.",
+                            (now - low["since"]).total_seconds() // 60, actual, potential_now)
+        else:
+            low.clear()
+    if x_plant_now is not None:
         if elev_now >= MIN_ELEVATION_LEARN:
             csi_now = csi(irradiance, ghi_now)
             station.update_csi(local_hour(now, cfg.timezone), csi_now)
-            if actual is not None and not curtailed:
+            # warm low-output episodes (shading, changed plant) are learned by the
+            # plant model; cold ones may be snow on the panels and are not
+            if actual is not None and not curtailed and not snow_possible:
                 station.learn(x_plant_now, actual)
         if reference is not None:
             station.update_reference(irradiance, reference, elev_now)
@@ -182,7 +215,12 @@ def pv_cycle(ha, cfg, dayahead, nowcast, slot_acc, log, influx=None, snapshot=No
 
     # what the forecast models learn from: the actual power, or -- while the
     # inverter curtails -- the potential power seen by the station
-    target, target_source = (potential_now, "station") if curtailed else (actual, "actual")
+    if curtailed:
+        target, target_source = potential_now, "station"
+    elif low_output:
+        target, target_source = None, "none (low output)"
+    else:
+        target, target_source = actual, "actual"
 
     # --- forecast models -------------------------------------------------------
     dayahead_now = dayahead.predict_or_solcast(x_now) if x_now is not None else None
@@ -269,6 +307,9 @@ def pv_cycle(ha, cfg, dayahead, nowcast, slot_acc, log, influx=None, snapshot=No
             "actual_source": actual_source,
             "learning_target": target_source,
             "curtailed": curtailed,
+            "low_output": low_output,
+            "low_output_snow_possible": snow_possible,
+            "low_output_since": low["since"].isoformat() if low and low.get("since") else None,
             "irradiance_w_m2": _r(irradiance),
             "station_potential_w": _r(potential_now),
             "station_ready": station.ready if station else False,
@@ -327,6 +368,16 @@ def pv_cycle(ha, cfg, dayahead, nowcast, slot_acc, log, influx=None, snapshot=No
             "model_active": dayahead.active,
         })
 
+    local_now = now.astimezone(tz)
+    if accuracy is not None:
+        if local_now.hour >= cfg.influx_snapshot_hour:
+            e = energy["tomorrow"]
+            if e["source"] in ("ml", "solcast"):
+                accuracy.note_forecast(tomorrow, e["kwh"], e["solcast_kwh"], e["source"])
+        accuracy.add(now, local_now.date(), actual, 2 * cfg.poll_interval + 60, curtailed, low_output)
+        accuracy.save()
+        accuracy.publish(ha)
+
     if influx is None:
         return
     influx.write([line("ml_layer_pv", {
@@ -341,6 +392,7 @@ def pv_cycle(ha, cfg, dayahead, nowcast, slot_acc, log, influx=None, snapshot=No
         "actual_w": _r(actual),
         "target_w": _r(target),
         "curtailed": curtailed,
+        "low_output": low_output,
         "irradiance_w_m2": _r(irradiance),
         "reference_irradiance_w_m2": _r(reference),
         "station_potential_w": _r(potential_now),
@@ -362,7 +414,6 @@ def pv_cycle(ha, cfg, dayahead, nowcast, slot_acc, log, influx=None, snapshot=No
     }, ts=now)])
 
     # once per evening: what EMHASS plans with for tomorrow (raw forecasts + ML curve)
-    local_now = now.astimezone(tz)
     if snapshot is not None and local_now.hour >= cfg.influx_snapshot_hour \
             and snapshot.get("date") != local_now.date():
         tomorrow = local_now.date() + timedelta(days=1)
@@ -451,6 +502,8 @@ def run():
             except Exception:
                 log.exception("History: learning from InfluxDB failed, live learning continues")
     snapshot = {}
+    accuracy = DailyAccuracy() if cfg.pv_enabled else None
+    low = {}
 
     log.info("ha-ml-layer started. Poll interval: %ss | pv=%s thermal=%s influx=%s station=%s "
              "second provider=%s curtailment=%s reference=%s | site %.3f/%.3f %s",
@@ -470,7 +523,8 @@ def run():
 
             if dayahead is not None:
                 try:
-                    pv_cycle(ha, cfg, dayahead, nowcast, slot_acc, log, influx, snapshot, station)
+                    pv_cycle(ha, cfg, dayahead, nowcast, slot_acc, log, influx, snapshot, station,
+                             accuracy, low)
                 except Exception:
                     log.exception("Error in PV cycle, retrying next interval.")
         else:
