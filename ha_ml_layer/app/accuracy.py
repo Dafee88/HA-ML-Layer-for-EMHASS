@@ -1,4 +1,4 @@
-"""Daily check of the forecast quality (sensor.pv_ml_forecast_accuracy).
+"""Daily check of the forecast error (sensor.pv_ml_forecast_accuracy).
 
 Every evening at the snapshot hour (default 20:00, before the EMHASS
 day-ahead run) the add-on notes tomorrow's forecast in kWh -- ML and raw
@@ -109,36 +109,49 @@ class DailyAccuracy:
         return None if err is None or actual <= 0.5 else round(100.0 * err / actual, 1)
 
     def publish(self, ha):
+        """State = energy-weighted ML error of the last WINDOW_DAYS scored days:
+        sum(|forecast - actual|) / sum(actual) in %. A single bad dull day does not
+        dominate it (unlike a mean of daily percentages)."""
         last = self.history[-1] if self.history else None
         win = self.history[-WINDOW_DAYS:]
 
+        def pairs(key):
+            return [(r[key], r["actual_kwh"]) for r in win if r.get(key) is not None]
+
         def mean_abs(key):
-            vals = [abs(r[key]) for r in win if r.get(key) is not None]
+            vals = [abs(e) for e, _ in pairs(key)]
             return round(sum(vals) / len(vals), 2) if vals else None
 
-        def mean_abs_pct(key):
-            vals = [abs(r[key]) / r["actual_kwh"] * 100.0 for r in win
-                    if r.get(key) is not None and r["actual_kwh"] > 0.5]
-            return round(sum(vals) / len(vals), 1) if vals else None
+        def bias(key):
+            vals = [e for e, _ in pairs(key)]
+            return round(sum(vals) / len(vals), 2) if vals else None
 
-        state = "unknown" if last is None else self._pct(last["ml_error_kwh"], last["actual_kwh"])
+        def weighted_pct(key):
+            p = pairs(key)
+            total = sum(a for _, a in p)
+            return None if not p or total <= 0.5 else round(100.0 * sum(abs(e) for e, _ in p) / total, 1)
+
+        state = weighted_pct("ml_error_kwh")
         ha.set_state(ENTITY, "unknown" if state is None else state, attributes={
             "unit_of_measurement": "%",
-            "friendly_name": "PV Forecast Accuracy (ML vs actual)",
-            "date": last["date"] if last else None,
-            "actual_kwh": last["actual_kwh"] if last else None,
-            "ml_kwh": last["ml_kwh"] if last else None,
-            "solcast_kwh": last["solcast_kwh"] if last else None,
-            "ml_error_kwh": last["ml_error_kwh"] if last else None,
-            "solcast_error_kwh": last["solcast_error_kwh"] if last else None,
-            "solcast_error_pct": self._pct(last["solcast_error_kwh"], last["actual_kwh"]) if last else None,
-            "curtailed_h": last["curtailed_h"] if last else None,
-            "low_output_h": last["low_output_h"] if last else None,
+            "state_class": "measurement",
+            "friendly_name": "PV Forecast Error (ML vs actual)",
             "days": len(win),
+            "error_ml_pct": state,
+            "error_solcast_pct": weighted_pct("solcast_error_kwh"),
             "mean_abs_error_ml_kwh": mean_abs("ml_error_kwh"),
             "mean_abs_error_solcast_kwh": mean_abs("solcast_error_kwh"),
-            "mean_abs_error_ml_pct": mean_abs_pct("ml_error_kwh"),
-            "mean_abs_error_solcast_pct": mean_abs_pct("solcast_error_kwh"),
+            "bias_ml_kwh": bias("ml_error_kwh"),
+            "bias_solcast_kwh": bias("solcast_error_kwh"),
+            "yesterday_date": last["date"] if last else None,
+            "yesterday_actual_kwh": last["actual_kwh"] if last else None,
+            "yesterday_ml_kwh": last["ml_kwh"] if last else None,
+            "yesterday_solcast_kwh": last["solcast_kwh"] if last else None,
+            "yesterday_ml_error_pct": self._pct(last["ml_error_kwh"], last["actual_kwh"]) if last else None,
+            "yesterday_solcast_error_pct": self._pct(last["solcast_error_kwh"], last["actual_kwh"]) if last else None,
+            "yesterday_curtailed_h": last["curtailed_h"] if last else None,
+            "yesterday_low_output_h": last["low_output_h"] if last else None,
             "history": win,
-            "source": "ha-ml-layer / forecast noted at the snapshot hour vs measured PV energy",
+            "source": "ha-ml-layer / forecast noted at the snapshot hour vs measured PV energy, "
+                      "energy-weighted over the last %d scored days" % WINDOW_DAYS,
         })

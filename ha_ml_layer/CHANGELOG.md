@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.7.1 — 2026-11-02
+
+### Geändert: Prognose-Fehler-Sensor aussagekräftiger
+- `sensor.pv_ml_forecast_accuracy` heißt jetzt „PV Forecast Error (ML vs actual)“.
+  Zustand = energiegewichteter ML-Fehler der letzten 7 bewerteten Tage in %
+  (Summe |Prognose − Ist| / Summe Ist) statt nur des letzten Tages – ein trüber
+  Tag mit wenig Ertrag verzerrt den Wert nicht mehr.
+- Neue Attribute: `error_ml_pct`, `error_solcast_pct` (gleiche Rechnung für Solcast),
+  `bias_ml_kwh`, `bias_solcast_kwh` (mittlere Abweichung mit Vorzeichen, positiv =
+  Prognose zu hoch).
+- Werte des letzten Tages bleiben als `yesterday_*`-Attribute erhalten; die alten
+  Attributnamen (`date`, `actual_kwh`, `ml_kwh`, …, `mean_abs_error_*_pct`) entfallen.
+- Entity-ID unverändert.
+
 ## 0.7.0 — 2026-10-27
 
 ### Neu: Prognose-Prüfung pro Tag

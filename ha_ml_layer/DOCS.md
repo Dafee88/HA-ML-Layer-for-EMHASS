@@ -61,12 +61,15 @@ through unchanged.
   `none` (state `unknown`). `solcast_kwh` for comparison.
 - `sensor.building_thermal_emhass` – `cooling_constant` and `heating_rate` in
   EMHASS units, attribute `valid` (see section 7).
-- `sensor.pv_ml_forecast_accuracy` – daily check: the forecast for a day as known
-  at the snapshot hour of the evening before (ML and raw Solcast, kWh) against the
-  measured PV energy. State = ML error of the last scored day in %; attributes
-  `actual_kwh`, `ml_kwh`, `solcast_kwh`, errors, `curtailed_h`, `low_output_h`,
-  mean absolute errors over 7 days and the daily `history`. Days with less than
-  90 % readings are not scored.
+- `sensor.pv_ml_forecast_accuracy` ("PV Forecast Error (ML vs actual)") – daily
+  check: the forecast for a day as known at the snapshot hour of the evening
+  before (ML and raw Solcast, kWh) against the measured PV energy. State =
+  energy-weighted ML error of the last 7 scored days in %
+  (sum of |forecast - actual| / sum of actual). Attributes: `error_solcast_pct`
+  (same for raw Solcast), mean absolute errors in kWh, `bias_ml_kwh` /
+  `bias_solcast_kwh` (mean signed error, positive = forecast too high), the
+  values of the last scored day (`yesterday_*`) and the daily `history`.
+  Days with less than 90 % readings are not scored.
 
 **Low output (snow, shading, faults):** with a weather station, PV power below
 50 % of the station's potential (potential at least 300 W) while not curtailed
