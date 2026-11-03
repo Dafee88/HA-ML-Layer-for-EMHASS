@@ -496,6 +496,11 @@ def run():
                               cfg.influx_username, cfg.influx_password, cfg.influx_ssl)
         log.info("InfluxDB enabled: %s", influx.describe())
         log_influx_inventory(influx, cfg, log)
+        if thermal is not None:
+            try:
+                thermal.backfill(influx)
+            except Exception:
+                log.exception("Thermal history: rebuilding from InfluxDB failed, live learning continues")
         if dayahead is not None and cfg.influx_learn_history:
             try:
                 dayahead = learn_from_history(influx, cfg, station, dayahead)

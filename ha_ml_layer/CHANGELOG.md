@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.8.0 — 2026-11-03
+
+### Geändert: Gebäude-Wärmemodell neu (Grey-Box statt Phasen/Bilanz)
+- Problem: Die Abkühlphasen-/Tagesbilanz-Methode schrieb interne Gewinne
+  (Personen, Geräte, Nachbarwohnungen) der Heizung zu. Auf echter Historie
+  nachgespielt ergab sie eine 3–6× zu hohe `heating_rate` und sagte die
+  Raumtemperatur schlechter voraus als „Temperatur bleibt“.
+- Neu: Anpassung der EMHASS-Parameter auf den Fehler von 24-h-Simulationen
+  (Start bei gemessener Raumtemperatur, danach nur Außentemperatur, Sonne und
+  Heizleistung) mit zusätzlichen Termen für interne Gewinne und Sonne und einer
+  Heizverzögerung.
+- Neue Attribute: `thermal_inertia` (h, EMHASS-Option), `internal_gain`,
+  `solar_gain`, `outdoor_temp_offset`, `rmse_24h`, `rmse_24h_persistence`,
+  `train_days`, `heating_kwh`, `info`, `last_fit`, `slots`.
+- Nachlernen beim Start aus der InfluxDB-Historie (35 Tage, braucht
+  `heating_power_sensor`), danach live in 30-min-Slots; neue Anpassung alle 24 h.
+- `valid` nur noch, wenn das Modell auf 2 nicht gelernten Tagen nicht schlechter
+  ist als „Temperatur bleibt“ (+ 0,1 K) – statt Anzahl von Phasen.
+- Entity-IDs unverändert; alter Speicher `building_thermal_v2.json` wird nicht
+  übernommen. Optionen unverändert.
+
 ## 0.7.1 — 2026-11-02
 
 ### Geändert: Prognose-Fehler-Sensor aussagekräftiger

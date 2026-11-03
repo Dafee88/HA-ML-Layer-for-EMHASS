@@ -59,8 +59,8 @@ through unchanged.
   `source`: `ml` (model active), `solcast` (raw Solcast), `station` (no Solcast
   data – weather-station estimate from typical cloudiness only, use with care),
   `none` (state `unknown`). `solcast_kwh` for comparison.
-- `sensor.building_thermal_emhass` – `cooling_constant` and `heating_rate` in
-  EMHASS units, attribute `valid` (see section 7).
+- `sensor.building_thermal_emhass` – `cooling_constant`, `heating_rate` and
+  `thermal_inertia` in EMHASS units, attribute `valid` (see section 7).
 - `sensor.pv_ml_forecast_accuracy` ("PV Forecast Error (ML vs actual)") – daily
   check: the forecast for a day as known at the snapshot hour of the evening
   before (ML and raw Solcast, kWh) against the measured PV energy. State =
@@ -153,27 +153,42 @@ again, delete `/data/dayahead_history_v2.json` or reinstall the add-on.
 
 ## 7. Building thermal model for EMHASS
 
-The add-on learns the parameters of EMHASS' thermal model
-(<https://emhass.readthedocs.io/en/stable/thermal_model.html>):
+The add-on fits the parameters of EMHASS' thermal model
+(<https://emhass.readthedocs.io/en/stable/thermal_model.html>) the way EMHASS
+uses them: on the error of 24 h simulations. Each simulation starts at a
+measured room temperature and then only sees the measured outdoor temperature,
+sun and heating power. Fitted (mean of the floors = `sensor.building_thermal_emhass`,
+each floor = `sensor.building_thermal_<floor>`):
 
-- `cooling_constant` (per hour per degree difference) from heating-off phases of
-  at least 3 h (3 h lock-out after the heating switched off), with a straight-line
-  fit through all readings – short windows are useless with 0.1 K sensors.
-- `heating_rate` (K/h at nominal power) from a daily energy balance between two
-  heating-off rest periods; days with noticeable sun are skipped. Needs
-  `thermal_nominal_power_w` (the P_nom of the heating load in EMHASS) and,
-  ideally, `heating_power_sensor` per floor.
+- `cooling_constant` (per hour per degree difference)
+- `heating_rate` (K/h at `thermal_nominal_power_w`, the P_nom of the heating load in EMHASS)
+- `thermal_inertia` (h) – delay of the heating (underfloor heating: hours),
+  EMHASS option of the same name
+- `internal_gain` (K/h) and `solar_gain` (K/h per 100 W/m² of `pv_irradiance`):
+  people, devices, neighbouring flats, sun. EMHASS' equation has no such terms;
+  `outdoor_temp_offset` = `internal_gain / cooling_constant` is the equivalent
+  shift of the outdoor temperature (add it to `outdoor_temperature_forecast`
+  for the exact model). Without these terms the gains end up in the heating
+  rate, which is then several times too high.
 
-`sensor.building_thermal_emhass` becomes `valid` after at least 3 usable cooling
-phases and 3 heating balances per floor. Use the values only when valid, e.g.
-inside your `def_load_config` / `thermal_config`:
+Data: 30-min slots, rebuilt at start from Home Assistant's InfluxDB history
+(last 35 days, needs `influxdb_enabled` and a `heating_power_sensor`), then
+live. The fit runs at start and every 24 h (a few seconds).
+
+`valid` only if, on the last 2 days (not used for fitting), the 24 h error
+(`rmse_24h`) is not worse than the trivial forecast "the temperature stays as it
+is" (`rmse_24h_persistence`) + 0.1 K. Before that: at least 4 training days and
+2 kWh of heating energy (attribute `info` says what is missing). Use the values
+only when valid, e.g. inside your `def_load_config` / `thermal_config`:
 
 ```jinja
 {% set t = states.sensor.building_thermal_emhass %}
 {% set ok = t is not none and t.attributes.valid %}
 "heating_rate": {{ t.attributes.heating_rate if ok else 2.0 }},
 "cooling_constant": {{ t.attributes.cooling_constant if ok else 0.005 }},
+"thermal_inertia": {{ t.attributes.thermal_inertia if ok else 0.0 }},
 ```
 
-(2.0 / 0.005 stand for your current fixed values.)
+(2.0 / 0.005 stand for your current fixed values. `thermal_inertia` needs an
+EMHASS version that has it, and `prior_heat` under MPC – see the EMHASS docs.)
 

@@ -140,9 +140,17 @@ Gelernte Modelle liegen in `/data/pv_dayahead_model_v4.pkl` und
 
 ## Gebäude-Wärmemodell (`ha_ml_layer/app/building_thermal.py`)
 
-Lernt pro Etage aus Messwerten:
-- **Abkühlkonstante k** [1/h] bei Heizung AUS: `dT/dt = −k · (T_innen − T_außen)`
-- **Heizrate h** [K/h] bei Heizung EIN: `dT/dt = h − k · (T_innen − T_außen)`
+Grey-Box-Modell in den Einheiten des EMHASS-Wärmemodells, angepasst auf den
+Fehler von 24-h-Simulationen (Start bei gemessener Raumtemperatur, danach nur
+Außentemperatur, Sonne und Heizleistung):
+
+`T+ = T + P(t−L)·h·dt/P_nom − k·dt·(T − T_außen) + dt·(s·I/100 + q)`
+
+- **k** `cooling_constant`, **h** `heating_rate` (bei `thermal_nominal_power_w`),
+  **L** `thermal_inertia` (Verzögerung der Fußbodenheizung)
+- **q** interne Gewinne, **s** Sonne – EMHASS kennt diese Terme nicht;
+  `outdoor_temp_offset = q/k` ist die gleichwertige Verschiebung der Außentemperatur.
+  Ohne sie landen die Gewinne in der Heizrate (bis 0.7.x: 3–6× zu hoch).
 
 Etagen werden in der Option `thermal_floors` eingetragen, z. B.:
 
@@ -160,22 +168,12 @@ Optional gilt eine Etage auch als beheizt, wenn `thermal_heating_stage` (ein
 `input_select`) ihren Namen als Zustand hat. Außentemperatur: `thermal_outdoor_temp`,
 optional `thermal_outdoor_temp_fallback`.
 
-Gelernt wird in den Einheiten des EMHASS-Wärmemodells:
-- **Abkühlkonstante** aus Abkühlphasen von mindestens 3 h (3 h Sperre nach dem
-  Abschalten der Heizung), Ausgleichsgerade über alle Messwerte, nur bei
-  ≥ 3 K Innen/außen-Differenz, ≥ 0,3 K Temperaturänderung und R² ≥ 0,5.
-  Kurze Fenster taugen bei 0,1-K-Sensoren nicht: über 60 min wäre allein die
-  Auflösung so groß wie der Wert.
-- **Heizrate** aus einer Tages-Energiebilanz (Ruhephase zu Ruhephase, ≥ 18 h),
-  normiert auf die Nennleistung (`thermal_nominal_power_w`). Die Verzögerung einer
-  Fußbodenheizung gleicht sich über den Tag aus. Sonnige Tage (> 1 kWh/m²)
-  werden übersprungen, weil EMHASS keine Solargewinne modelliert.
-- Heizsignal pro Etage: Schalter, Leistungssensor (über Schwelle) oder Thermostat.
-
-Werte werden geglättet und in `/data/building_thermal_v2.json` gespeichert.
-`sensor.building_thermal_emhass` (Mittel über die Etagen) wird `valid` nach je
-3 Abkühlphasen und 3 Bilanzen pro Etage. Simulation: wahr 0,005/h und 2,0 K/h,
-gelernt 0,00484/h und 1,94 K/h.
+Daten: 30-min-Slots, beim Start aus der InfluxDB-Historie (35 Tage, braucht
+`heating_power_sensor`), danach live; Anpassung beim Start und alle 24 h.
+Gespeichert in `/data/building_thermal_v3.json`. `valid` nur, wenn der
+24-h-Fehler auf den letzten 2 (nicht gelernten) Tagen nicht schlechter ist als
+„Temperatur bleibt“ + 0,1 K. Test mit echten Daten (21.09.–03.11.): 24-h-Fehler
+0,39 K gegen 0,94 K „Temperatur bleibt“; die alte Methode lag darüber.
 
 ---
 

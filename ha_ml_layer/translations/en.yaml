@@ -13,7 +13,7 @@ configuration:
     description: Correct the Solcast forecast and publish sensor.pv_ml_corrected_forecast and sensor.pv_ml_corrected_forecast_curve for EMHASS.
   thermal_enabled:
     name: Building thermal model
-    description: Learn cooling and heating rates per floor (sensor.building_thermal_<floor>).
+    description: Fit cooling constant, heating rate and heating delay in EMHASS units on 24 h simulations, from InfluxDB history and live data (sensor.building_thermal_emhass, sensor.building_thermal_<floor>).
   latitude:
     name: Latitude
     description: Optional. Site latitude in degrees for sun position and clear-sky irradiance. Empty = location from the Home Assistant configuration.
