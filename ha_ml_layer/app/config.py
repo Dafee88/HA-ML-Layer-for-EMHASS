@@ -102,6 +102,7 @@ class Config:
             entry = {
                 "name": name,
                 "temp": _entity(fl, "temperature_sensor", "", problems),
+                "temp_fallback": _entity(fl, "temperature_sensor_fallback", "", problems),
                 "heat_switch": _entity(fl, "heating_switch", "", problems),
                 "climate": _entity(fl, "climate", "", problems),
                 "power": _entity(fl, "heating_power_sensor", "", problems),

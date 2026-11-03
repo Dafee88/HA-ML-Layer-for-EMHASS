@@ -42,7 +42,7 @@ import numpy as np
 
 log = logging.getLogger("building_thermal")
 
-STATE_FILE = "/data/building_thermal_v3.json"   # v2 (phase regression) is not reused
+STATE_FILE = "/data/building_thermal_v4.json"   # v4: rebuilt with stale-value limit + fallback sensors
 
 SLOT_S = 1800
 DT_H = SLOT_S / 3600.0
@@ -53,6 +53,8 @@ HISTORY_DAYS = 35
 TEST_DAYS = 2
 MIN_TRAIN_DAYS = 4
 FIT_INTERVAL_H = 24
+STALE_S = 12 * 3600         # InfluxDB keeps no "unavailable": carry a value at most 12 h
+OFFSET_ALPHA = 0.02         # EMA of (main - fallback) temperature while both report
 VALID_TOLERANCE_K = 0.1
 MIN_SLOT_SHARE = 0.5        # slot needs half of its polls
 MIN_HEATING_KWH = 2.0       # heating energy in the training data, else heating_rate is not identifiable
@@ -166,8 +168,23 @@ class BuildingThermalModel:
     def _entities(self):
         out = [self.outdoor, self.outdoor_fallback, self.stage, self.irradiance]
         for c in self.floors.values():
-            out += [c["temp"], c.get("heat_switch"), c.get("climate"), c.get("power")]
+            out += [c["temp"], c.get("temp_fallback"), c.get("heat_switch"), c.get("climate"), c.get("power")]
         return [e for e in dict.fromkeys(out) if e]
+
+    def _floor_temp(self, floor, states):
+        """Main sensor; while it is unavailable the fallback sensor + learned offset."""
+        c = self.floors[floor]
+        main = _f(states.get(c["temp"]))
+        fb = _f(states.get(c["temp_fallback"])) if c.get("temp_fallback") else None
+        offsets = self.result.setdefault("offsets", {})
+        if main is not None and fb is not None:
+            old = offsets.get(floor)
+            offsets[floor] = round(main - fb if old is None else (1 - OFFSET_ALPHA) * old + OFFSET_ALPHA * (main - fb), 3)
+        if main is not None:
+            return main
+        if fb is not None:
+            return fb + (offsets.get(floor) or 0.0)
+        return None
 
     def _heating_power(self, states):
         """House heating power in W (None = unknown)."""
@@ -201,7 +218,7 @@ class BuildingThermalModel:
         if t_out is None and self.outdoor_fallback:
             t_out = _f(states.get(self.outdoor_fallback))
         irr = _f(states.get(self.irradiance)) if self.irradiance else 0.0
-        temps = {f: _f(states.get(c["temp"])) for f, c in self.floors.items()}
+        temps = {f: self._floor_temp(f, states) for f in self.floors}
         power = self._heating_power(states)
 
         slot = int(now // SLOT_S) * SLOT_S
@@ -241,9 +258,34 @@ class BuildingThermalModel:
             self.refit()        # not valid yet: try again with every new slot, not only once a day
 
     # --- history from InfluxDB ----------------------------------------------------
+    @staticmethod
+    def _series(influx, entity_id, start, end):
+        """{5-min bucket epoch: mean}, last value carried forward for at most STALE_S."""
+        from history import _meta, _ident, _q, _obj
+        meta = _meta(influx, entity_id, lambda f: f == "value")
+        if meta is None:
+            return {}
+        meas, field = meta
+        series = influx.query(
+            f"SELECT mean({_ident(field)}) FROM {_ident(meas)} WHERE entity_id = {_q(_obj(entity_id))} "
+            f"AND time >= {int(start.timestamp()) - STALE_S}s AND time < {int(end.timestamp())}s "
+            f"GROUP BY time(5m) fill(none)")
+        raw = {}
+        for s in series or []:
+            for t, v in s.get("values", []):
+                if v is not None:
+                    raw[int(t)] = float(v)
+        out, last_t, last_v = {}, None, None
+        b0 = (int(start.timestamp()) - STALE_S) // 300 * 300
+        for t in range(b0, int(end.timestamp()), 300):
+            if t in raw:
+                last_t, last_v = t, raw[t]
+            if last_t is not None and t - last_t <= STALE_S:
+                out[t] = last_v
+        return out
+
     def backfill(self, influx, now=None):
         """Rebuild 30-min slots from Home Assistant's InfluxDB history (read-only)."""
-        from history import _buckets
         if not self.power_sensors:
             log.info("Thermal history: no heating_power_sensor configured, learning from live data only")
             return
@@ -251,34 +293,53 @@ class BuildingThermalModel:
         start = end - timedelta(days=HISTORY_DAYS)
         series = {}
         for e in [self.outdoor, self.outdoor_fallback, self.irradiance] + self.power_sensors \
-                + [c["temp"] for c in self.floors.values()]:
+                + [c["temp"] for c in self.floors.values()] + [c.get("temp_fallback") for c in self.floors.values()]:
             if e and e not in series:
-                series[e] = _buckets(influx, e, start, end)
-        n_new = 0
+                series[e] = self._series(influx, e, start, end)
         b = 300
         first = int(start.timestamp()) // SLOT_S * SLOT_S
-        for slot in range(first, int(end.timestamp()) // SLOT_S * SLOT_S, SLOT_S):
+        slots = list(range(first, int(end.timestamp()) // SLOT_S * SLOT_S, SLOT_S))
+
+        def mean(e, slot):
+            if not e:
+                return None
+            vals = [series[e].get(slot + i * b) for i in range(SLOT_S // b)]
+            vals = [v for v in vals if v is not None]
+            return sum(vals) / len(vals) if len(vals) >= 3 else None
+
+        # offset main - fallback from the history where both report
+        offsets = self.result.setdefault("offsets", {})
+        for f, c in self.floors.items():
+            if c.get("temp_fallback") and offsets.get(f) is None:
+                diffs = [mean(c["temp"], s) - mean(c["temp_fallback"], s) for s in slots
+                         if mean(c["temp"], s) is not None and mean(c["temp_fallback"], s) is not None]
+                if diffs:
+                    offsets[f] = round(sum(diffs) / len(diffs), 3)
+                    log.info("Thermal history: %s fallback offset %+.2f K from %d slots", f, offsets[f], len(diffs))
+        n_new = n_fb = 0
+        for slot in slots:
             if slot in self.slots:
                 continue
-
-            def mean(e):
-                if not e:
-                    return None
-                vals = [series[e].get(slot + i * b) for i in range(SLOT_S // b)]
-                vals = [v for v in vals if v is not None]
-                return sum(vals) / len(vals) if len(vals) >= 3 else None
-            temps = {f: mean(c["temp"]) for f, c in self.floors.items()}
-            to = mean(self.outdoor)
+            temps = {}
+            for f, c in self.floors.items():
+                t = mean(c["temp"], slot)
+                if t is None and c.get("temp_fallback"):
+                    t = mean(c["temp_fallback"], slot)
+                    if t is not None:
+                        t += offsets.get(f) or 0.0
+                        n_fb += 1
+                temps[f] = t
+            to = mean(self.outdoor, slot)
             if to is None:
-                to = mean(self.outdoor_fallback)
-            ps = [mean(e) for e in self.power_sensors]
-            irr = mean(self.irradiance) if self.irradiance else 0.0
+                to = mean(self.outdoor_fallback, slot)
+            ps = [mean(e, slot) for e in self.power_sensors]
+            irr = mean(self.irradiance, slot) if self.irradiance else 0.0
             if to is None or any(v is None for v in temps.values()) or any(v is None for v in ps):
                 continue
             self.slots[slot] = {"t": temps, "to": to, "i": max(irr or 0.0, 0.0), "p": sum(max(v, 0.0) for v in ps)}
             n_new += 1
-        log.info("Thermal history: %d slots rebuilt from InfluxDB (%d slots in total, %.1f days)",
-                 n_new, len(self.slots), len(self.slots) / 48.0)
+        log.info("Thermal history: %d slots rebuilt from InfluxDB (%d floor values from fallback sensors), "
+                 "%d slots in total, %.1f days", n_new, n_fb, len(self.slots), len(self.slots) / 48.0)
         self.save()
         self.refit()
 
@@ -364,7 +425,8 @@ class BuildingThermalModel:
         for floor, c in self.floors.items():
             r = self.result["floors"].get(floor) or {}
             ha.set_state(c["output"], "calibrated" if r.get("valid") else "learning", attributes=dict(
-                {"friendly_name": c["friendly"], "source": src}, **r))
+                {"friendly_name": c["friendly"], "source": src,
+                 "fallback_offset": (self.result.get("offsets") or {}).get(floor)}, **r))
         r = self.result.get("house") or {}
         k, h, normalised, valid = self.emhass_values()
         ha.set_state(EMHASS_SENSOR, "valid" if valid else "learning", attributes=dict(

@@ -169,8 +169,11 @@ Optional gilt eine Etage auch als beheizt, wenn `thermal_heating_stage` (ein
 optional `thermal_outdoor_temp_fallback`.
 
 Daten: 30-min-Slots, beim Start aus der InfluxDB-Historie (35 Tage, braucht
-`heating_power_sensor`), danach live; Anpassung beim Start und alle 24 h.
-Gespeichert in `/data/building_thermal_v3.json`. `valid` nur, wenn der
+`heating_power_sensor`; ein Wert gilt höchstens 12 h weiter), danach live.
+Optional pro Etage `temperature_sensor_fallback` (z. B. Thermostat-Sensor):
+springt ein, solange `temperature_sensor` nicht verfügbar ist, korrigiert um
+den gelernten Unterschied beider Sensoren (`fallback_offset`); Anpassung beim Start und alle 24 h.
+Gespeichert in `/data/building_thermal_v4.json`. `valid` nur, wenn der
 24-h-Fehler auf den letzten 2 (nicht gelernten) Tagen nicht schlechter ist als
 „Temperatur bleibt“ + 0,1 K. Test mit echten Daten (21.09.–03.11.): 24-h-Fehler
 0,39 K gegen 0,94 K „Temperatur bleibt“; die alte Methode lag darüber.
@@ -206,7 +209,7 @@ Eingaben (z. B. ungültige Entity-ID) stehen beim Start als `Configuration:` im 
 | Allgemein | `poll_interval_seconds` (60–3600, empfohlen 300), `log_level`, `pv_enabled`, `thermal_enabled` |
 | Standort | optional `latitude`, `longitude`, `timezone` (leer = aus der Home-Assistant-Konfiguration) |
 | PV | `pv_solcast_today`, `pv_solcast_tomorrow` (Solcast-Sensoren mit `detailedForecast`), `pv_actual_power` (W), optional `pv_actual_power_fallback`, `pv_irradiance` (Wetterstation), `pv_forecast_solar_today`/`_tomorrow`, `pv_curtailed_entity`, `pv_reference_irradiance`, `pv_peak_power_kw` |
-| Wärmemodell | `thermal_outdoor_temp`, optional `thermal_outdoor_temp_fallback`, optional `thermal_heating_stage`, `thermal_floors` (pro Etage `name`, `temperature_sensor` und `heating_switch` oder `climate`) |
+| Wärmemodell | `thermal_outdoor_temp`, optional `thermal_outdoor_temp_fallback`, optional `thermal_heating_stage`, `thermal_floors` (pro Etage `name`, `temperature_sensor`, optional `temperature_sensor_fallback` und `heating_switch` oder `climate`) |
 | InfluxDB | `influxdb_enabled`, `influxdb_host` (InfluxDB-Add-on: `a0d7b954-influxdb`), `influxdb_port`, `influxdb_ssl`, `influxdb_database`, `influxdb_username`, `influxdb_password`, `influxdb_dayahead_snapshot_hour` |
 
 Ausgabe-Sensoren sind fest, weil EMHASS sie liest: `sensor.pv_ml_corrected_forecast`,

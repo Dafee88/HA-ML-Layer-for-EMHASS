@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.8.2 — 2026-11-03
+
+### Neu: Ersatz-Temperatursensor pro Etage
+- Option `temperature_sensor_fallback` in `thermal_floors` (z. B. der eigene
+  Sensor des Thermostats). Ist `temperature_sensor` nicht verfügbar, wird der
+  Ersatzsensor plus gelerntem Unterschied beider Sensoren verwendet (Attribut
+  `fallback_offset` an `sensor.building_thermal_<etage>`) – vorher wurde jeder
+  30-min-Slot verworfen, sobald eine Etage fehlte.
+
+### Behoben: eingefrorene Werte beim Nachlernen aus InfluxDB
+- InfluxDB speichert kein „unavailable“; ein letzter Wert wurde bis zum
+  Fensterende weitergeführt. Jetzt gilt ein Wert höchstens 12 h weiter.
+- Speicher neu (`building_thermal_v4.json`), damit die betroffenen Slots
+  sauber neu aufgebaut werden (Fit dauert wenige Sekunden).
+
 ## 0.8.1 — 2026-11-03
 
 ### Behoben: Gebäudemodell wartete bis zu 24 h auf den ersten Fit
