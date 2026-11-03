@@ -42,7 +42,7 @@ import numpy as np
 
 log = logging.getLogger("building_thermal")
 
-STATE_FILE = "/data/building_thermal_v4.json"   # v4: rebuilt with stale-value limit + fallback sensors
+STATE_FILE = "/data/building_thermal_v5.json"   # v5: rebuilt (0.8.3 stale limit only for sensors with fallback)
 
 SLOT_S = 1800
 DT_H = SLOT_S / 3600.0
@@ -53,7 +53,8 @@ HISTORY_DAYS = 35
 TEST_DAYS = 2
 MIN_TRAIN_DAYS = 4
 FIT_INTERVAL_H = 24
-STALE_S = 12 * 3600         # InfluxDB keeps no "unavailable": carry a value at most 12 h
+STALE_S = 12 * 3600         # InfluxDB keeps no "unavailable": a main temperature sensor WITH fallback
+                            # is carried at most 12 h (others: unlimited - HA writes only changes)
 OFFSET_ALPHA = 0.02         # EMA of (main - fallback) temperature while both report
 VALID_TOLERANCE_K = 0.1
 MIN_SLOT_SHARE = 0.5        # slot needs half of its polls
@@ -259,8 +260,8 @@ class BuildingThermalModel:
 
     # --- history from InfluxDB ----------------------------------------------------
     @staticmethod
-    def _series(influx, entity_id, start, end):
-        """{5-min bucket epoch: mean}, last value carried forward for at most STALE_S."""
+    def _series(influx, entity_id, start, end, max_carry=None):
+        """{5-min bucket epoch: mean}, last value carried forward (at most max_carry seconds)."""
         from history import _meta, _ident, _q, _obj
         meta = _meta(influx, entity_id, lambda f: f == "value")
         if meta is None:
@@ -280,7 +281,7 @@ class BuildingThermalModel:
         for t in range(b0, int(end.timestamp()), 300):
             if t in raw:
                 last_t, last_v = t, raw[t]
-            if last_t is not None and t - last_t <= STALE_S:
+            if last_t is not None and (max_carry is None or t - last_t <= max_carry):
                 out[t] = last_v
         return out
 
@@ -291,11 +292,12 @@ class BuildingThermalModel:
             return
         end = datetime.fromtimestamp(now or time.time(), timezone.utc)
         start = end - timedelta(days=HISTORY_DAYS)
+        limited = {c["temp"] for c in self.floors.values() if c.get("temp_fallback")}
         series = {}
         for e in [self.outdoor, self.outdoor_fallback, self.irradiance] + self.power_sensors \
                 + [c["temp"] for c in self.floors.values()] + [c.get("temp_fallback") for c in self.floors.values()]:
             if e and e not in series:
-                series[e] = self._series(influx, e, start, end)
+                series[e] = self._series(influx, e, start, end, STALE_S if e in limited else None)
         b = 300
         first = int(start.timestamp()) // SLOT_S * SLOT_S
         slots = list(range(first, int(end.timestamp()) // SLOT_S * SLOT_S, SLOT_S))

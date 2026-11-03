@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.8.3 — 2026-11-03
+
+### Behoben: 0.8.2 verwarf beim Nachlernen zu viele Slots
+- Home Assistant schreibt nur Änderungen nach InfluxDB; ein Heizleistungs-
+  Sensor steht oft stundenlang auf 0 W. Die 12-h-Grenze aus 0.8.2 galt für alle
+  Sensoren und warf diese Zeiten weg (live: 270 statt ~330 Slots, nur 1,2
+  Trainingstage). Jetzt gilt sie nur für Temperatursensoren mit Ersatzsensor;
+  alle anderen Werte gelten weiter, bis sich der Sensor ändert.
+- Speicher neu (`building_thermal_v5.json`).
+
 ## 0.8.2 — 2026-11-03
 
 ### Neu: Ersatz-Temperatursensor pro Etage

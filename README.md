@@ -173,7 +173,7 @@ Daten: 30-min-Slots, beim Start aus der InfluxDB-Historie (35 Tage, braucht
 Optional pro Etage `temperature_sensor_fallback` (z. B. Thermostat-Sensor):
 springt ein, solange `temperature_sensor` nicht verfügbar ist, korrigiert um
 den gelernten Unterschied beider Sensoren (`fallback_offset`); Anpassung beim Start und alle 24 h.
-Gespeichert in `/data/building_thermal_v4.json`. `valid` nur, wenn der
+Gespeichert in `/data/building_thermal_v5.json`. `valid` nur, wenn der
 24-h-Fehler auf den letzten 2 (nicht gelernten) Tagen nicht schlechter ist als
 „Temperatur bleibt“ + 0,1 K. Test mit echten Daten (21.09.–03.11.): 24-h-Fehler
 0,39 K gegen 0,94 K „Temperatur bleibt“; die alte Methode lag darüber.
