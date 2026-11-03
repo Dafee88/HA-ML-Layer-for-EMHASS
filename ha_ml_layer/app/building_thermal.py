@@ -237,6 +237,8 @@ class BuildingThermalModel:
         cutoff = a["slot"] - HISTORY_DAYS * 86400
         self.slots = {k: v for k, v in self.slots.items() if k >= cutoff}
         self.save()
+        if not (self.result.get("house") or {}).get("valid"):
+            self.refit()        # not valid yet: try again with every new slot, not only once a day
 
     # --- history from InfluxDB ----------------------------------------------------
     def backfill(self, influx, now=None):

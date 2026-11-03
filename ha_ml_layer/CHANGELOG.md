@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.1 — 2026-11-03
+
+### Behoben: Gebäudemodell wartete bis zu 24 h auf den ersten Fit
+- Solange das Modell nicht `valid` ist, wird nach jedem neuen 30-min-Slot neu
+  angepasst (dauert wenige Sekunden), nicht nur alle 24 h. Simulation mit echten
+  Daten: Fit nach 6 h statt nach 24 h. Ist es `valid`, bleibt es bei einem Fit
+  pro Tag.
+
 ## 0.8.0 — 2026-11-03
 
 ### Geändert: Gebäude-Wärmemodell neu (Grey-Box statt Phasen/Bilanz)
