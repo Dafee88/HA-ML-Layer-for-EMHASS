@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.8.4 — 2026-11-06
+
+### Behoben: Heizenergie beim Nachlernen aus InfluxDB bis zu 20-fach zu hoch
+- Leere 5-min-Abschnitte bekamen den MITTELWERT des letzten Abschnitts mit
+  Daten (InfluxDB `fill(previous)`). Endet ein Heizlauf mitten im Abschnitt
+  (z. B. 800 W -> 0 W), wurden ~400 W stundenlang weitergeführt, bis sich der
+  Sensor wieder änderte. Echte Daten 29.10.-01.11.: 8-22 kWh/Tag statt
+  0,8-1,4 kWh/Tag. Das Gebäudemodell lernte daraus „Heizen wirkt nicht“
+  (heating_rate an der Untergrenze, nicht valid).
+- Jetzt: Abschnitte mit Daten = Mittelwert, leere Abschnitte = LETZTER
+  gemessener Wert (`mean()` + `last()`). Gilt auch für das PV-Nachlernen
+  (läuft nur einmal, bestehende Modelle unverändert).
+- Speicher neu (`building_thermal_v6.json`).
+
 ## 0.8.3 — 2026-11-03
 
 ### Behoben: 0.8.2 verwarf beim Nachlernen zu viele Slots

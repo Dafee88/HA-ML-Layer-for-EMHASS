@@ -116,22 +116,38 @@ def _meta(influx, entity_id, field_pred):
     return None
 
 
-def _buckets(influx, entity_id, start, end):
-    """{bucket_start_epoch: mean value} of 5-min buckets, last value carried forward."""
+def _buckets(influx, entity_id, start, end, max_carry=None, lookback=0):
+    """{bucket_start_epoch: value} of 5-min buckets.
+
+    A bucket with points gets their mean. An empty bucket gets the LAST point
+    before it (Home Assistant writes only changes), for at most max_carry
+    seconds. Carrying the bucket mean instead (InfluxDB fill(previous)) is
+    wrong for sensors that jump: a bucket in which the heating went
+    800 W -> 0 W has a mean of ~400 W, and that value was carried for hours.
+    lookback: seconds before start to look for a value to carry into the window.
+    """
     meta = _meta(influx, entity_id, lambda f: f == "value")
     if meta is None:
         return {}
     meas, field = meta
-    # carry the last value from before the window into it
+    t_start, t_end = int(start.timestamp()) - int(lookback), int(end.timestamp())
     series = influx.query(
-        f"SELECT mean({_ident(field)}) FROM {_ident(meas)} WHERE entity_id = {_q(_obj(entity_id))} "
-        f"AND time >= {int(start.timestamp())}s AND time < {int(end.timestamp())}s "
-        f"GROUP BY time(5m) fill(previous)")
-    out = {}
+        f"SELECT mean({_ident(field)}), last({_ident(field)}) FROM {_ident(meas)} "
+        f"WHERE entity_id = {_q(_obj(entity_id))} "
+        f"AND time >= {t_start}s AND time < {t_end}s GROUP BY time(5m) fill(none)")
+    raw = {}
     for s in series or []:
-        for t, v in s.get("values", []):
-            if v is not None:
-                out[int(t)] = float(v)
+        for row in s.get("values", []):
+            if len(row) >= 3 and row[1] is not None and row[2] is not None:
+                raw[int(row[0])] = (float(row[1]), float(row[2]))
+    out, last_t, last_v = {}, None, None
+    step = int(BUCKET.total_seconds())
+    for t in range(t_start // step * step, t_end, step):
+        if t in raw:
+            out[t] = raw[t][0]
+            last_t, last_v = t, raw[t][1]
+        elif last_t is not None and (max_carry is None or t - last_t <= max_carry):
+            out[t] = last_v
     return out
 
 

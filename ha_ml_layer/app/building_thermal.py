@@ -42,7 +42,7 @@ import numpy as np
 
 log = logging.getLogger("building_thermal")
 
-STATE_FILE = "/data/building_thermal_v5.json"   # v5: rebuilt (0.8.3 stale limit only for sensors with fallback)
+STATE_FILE = "/data/building_thermal_v6.json"   # v6: rebuilt (0.8.4 carry last value, not bucket mean)
 
 SLOT_S = 1800
 DT_H = SLOT_S / 3600.0
@@ -261,29 +261,9 @@ class BuildingThermalModel:
     # --- history from InfluxDB ----------------------------------------------------
     @staticmethod
     def _series(influx, entity_id, start, end, max_carry=None):
-        """{5-min bucket epoch: mean}, last value carried forward (at most max_carry seconds)."""
-        from history import _meta, _ident, _q, _obj
-        meta = _meta(influx, entity_id, lambda f: f == "value")
-        if meta is None:
-            return {}
-        meas, field = meta
-        series = influx.query(
-            f"SELECT mean({_ident(field)}) FROM {_ident(meas)} WHERE entity_id = {_q(_obj(entity_id))} "
-            f"AND time >= {int(start.timestamp()) - STALE_S}s AND time < {int(end.timestamp())}s "
-            f"GROUP BY time(5m) fill(none)")
-        raw = {}
-        for s in series or []:
-            for t, v in s.get("values", []):
-                if v is not None:
-                    raw[int(t)] = float(v)
-        out, last_t, last_v = {}, None, None
-        b0 = (int(start.timestamp()) - STALE_S) // 300 * 300
-        for t in range(b0, int(end.timestamp()), 300):
-            if t in raw:
-                last_t, last_v = t, raw[t]
-            if last_t is not None and (max_carry is None or t - last_t <= max_carry):
-                out[t] = last_v
-        return out
+        """{5-min bucket epoch: value}; empty buckets carry the last point (at most max_carry s)."""
+        from history import _buckets
+        return _buckets(influx, entity_id, start, end, max_carry=max_carry, lookback=STALE_S)
 
     def backfill(self, influx, now=None):
         """Rebuild 30-min slots from Home Assistant's InfluxDB history (read-only)."""
