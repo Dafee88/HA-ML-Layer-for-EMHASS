@@ -48,7 +48,7 @@ MIN_EVAL = 10                  # evaluated days before the gate may open
 EVAL_WINDOW = 30
 CLIM_WINDOW = 30
 MAX_SAMPLES = 180
-RIDGE_LAMBDA = 1.0
+RIDGE_LAMBDA = 10.0            # strong shrinkage: few samples, weak signals (real backtest 2026)
 FACTOR_CLIP = (0.2, 2.5)
 PRESSURE_TOL_S = 45 * 60       # a pressure reading this close counts as "3 h ago"
 PRESSURE_KEEP_S = 8 * 86400
@@ -284,8 +284,8 @@ class LocalWeatherModel:
             self.save()
             return
         pres_unit = None
-        pres = _buckets(influx, pressure_entity, start, end, max_carry=1800) if pressure_entity else {}
-        hum = _buckets(influx, humidity_entity, start, end, max_carry=1800) if humidity_entity else {}
+        pres = _buckets(influx, pressure_entity, start, end, max_carry=10800) if pressure_entity else {}
+        hum = _buckets(influx, humidity_entity, start, end, max_carry=10800) if humidity_entity else {}
         if pressure_entity:
             from history import _meta
             meta = _meta(influx, pressure_entity, lambda f: f == "value")

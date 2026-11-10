@@ -21,6 +21,12 @@
   `unit_of_measurement`) und `weather_humidity` (%), beide optional.
 - Mit InfluxDB werden beim ersten Start (und bei geänderten Eingängen) bis zu
   120 Tage aus der Historie nachgebaut. Speicher `/data/local_weather_v1.json`.
+- Backtest mit echten Ecowitt-Daten (21.09.-10.11.2026, 37 gewertete Tage):
+  Klimatologie MAE 0,131, Persistenz 0,153, Regression 0,131-0,158 je nach
+  Merkmalen - im Herbst (Hochnebel) bringt der Drucktrend noch keinen
+  Vorteil. Die Freigabe bleibt daher vorerst zu; sie öffnet sich erst, wenn
+  die Regression über mehr Wetterlagen die Klimatologie schlägt.
+  Ridge-Dämpfung auf 10 erhöht (weniger Überanpassung bei wenigen Tagen).
 
 ## 0.8.4 — 2026-11-06
 
