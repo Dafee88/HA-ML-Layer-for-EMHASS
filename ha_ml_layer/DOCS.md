@@ -73,6 +73,16 @@ through unchanged.
   values of the last scored day (`yesterday_*`) and the daily `history`.
   Days with less than 90 % readings are not scored.
 
+- `sensor.pv_local_forecast_curve` ("PV Forecast Curve (local station)", needs
+  `pv_irradiance`) – the same 48 × 30 min curve from your weather station
+  only, computed every cycle in parallel to the ML curve, plus
+  `today_remaining_kwh`, `tomorrow_kwh`, `calibration` and `error_local_pct`.
+  Its evening forecast for tomorrow is scored like ML and Solcast
+  (`error_local_pct`, `bias_local_kwh` on `sensor.pv_ml_forecast_accuracy`).
+  The ratio actual / raw forecast of the last 14 scored days (from 5 days,
+  limited to 0.5-1.5) calibrates it (`local_calibration`). The calibrated
+  station forecast is also what fills every slot without Solcast data in the
+  ML curve - the fallback EMHASS gets without internet.
 - `sensor.pv_ml_local_weather` ("Local Weather Outlook (station)", needs
   `pv_irradiance`) – tomorrow's cloudiness from your own station only, so it
   also works without internet (power cut, API down). State `sunny` / `partly

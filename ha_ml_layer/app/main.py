@@ -34,6 +34,7 @@ from local_weather import LocalWeatherModel, to_hpa
 
 ENTITY_TOMORROW_KWH = "sensor.pv_ml_forecast_tomorrow_kwh"
 ENTITY_TODAY_REMAINING_KWH = "sensor.pv_ml_forecast_today_remaining_kwh"
+ENTITY_LOCAL_CURVE = "sensor.pv_local_forecast_curve"      # station-only curve, runs in parallel
 WATCH_INTERVAL_S = 60
 # PV far below the station's potential although not curtailed: snow on the
 # panels, shading, a fault. Such readings are not learned (they would teach
@@ -75,7 +76,30 @@ def _sum_states(states, entities):
     return None if any(v is None for v in vals) else sum(vals)
 
 
-def daily_energy(rows, now, slot0, tz, today, tomorrow, dayahead, day_ctx, station, tz_name, weather=None):
+def station_day_kwh(station, weather, day, now, tz, tz_name, calib=1.0, csi_now=None):
+    """(kWh, slots, weather factor) of the rest of a day from the station alone, or (None, 0, None)."""
+    if station is None or not station.ready:
+        return None, 0, None
+    day_start = datetime(day.year, day.month, day.day, tzinfo=tz).astimezone(timezone.utc)
+    slots = [s for s in (day_start + i * SLOT for i in range(48)) if s + SLOT > now]
+    if not slots:
+        return 0.0, 0, None
+    mids = [s + SLOT_MID for s in slots]
+    ghi, elev, azi = solar_position(mids)
+    f = weather.day_factor(day) if weather is not None else 1.0
+    kwh = 0.0
+    for s, m, g, e, a in zip(slots, mids, ghi, elev, azi):
+        dt_h = max((s - now).total_seconds() / 3600.0, 0.0) if csi_now is not None else 99.0
+        v = station.fallback(m, g, e, a, local_hour(m, tz_name), csi_now, dt_h, f)
+        if v is None:
+            return None, 0, None
+        share = 1.0 if s >= now else max((s + SLOT - now) / SLOT, 0.0)
+        kwh += v * calib * 0.5 / 1000.0 * share
+    return kwh, len(slots), f
+
+
+def daily_energy(rows, now, slot0, tz, today, tomorrow, dayahead, day_ctx, station, tz_name, weather=None,
+                 calib=1.0):
     """kWh for tomorrow and for the rest of today.
 
     Solcast slots go through the day-ahead model (= raw Solcast while the model
@@ -97,18 +121,7 @@ def daily_energy(rows, now, slot0, tz, today, tomorrow, dayahead, day_ctx, stati
             out[key] = {"kwh": ml_kwh, "solcast_kwh": sc_kwh, "slots": len(sel),
                         "source": "ml" if dayahead.active else "solcast"}
             continue
-        kwh, n = None, 0
-        if station is not None and station.ready:
-            day_start = datetime(day.year, day.month, day.day, tzinfo=tz).astimezone(timezone.utc)
-            slots = [day_start + i * SLOT for i in range(48)]
-            slots = [s for s in slots if s + SLOT > now]
-            mids = [s + SLOT_MID for s in slots]
-            ghi, elev, azi = solar_position(mids) if mids else ([], [], [])
-            f = weather.day_factor(day) if weather is not None else 1.0
-            vals = [station.fallback(m, g, e, a, local_hour(m, tz_name), None, 99.0, f)
-                    for m, g, e, a in zip(mids, ghi, elev, azi)]
-            if vals and all(v is not None for v in vals):
-                kwh, n = sum(vals) * 0.5 / 1000.0, len(vals)
+        kwh, n, f = station_day_kwh(station, weather, day, now, tz, tz_name, calib)
         out[key] = {"kwh": kwh, "solcast_kwh": None, "slots": n,
                     "source": "station" if kwh is not None else "none",
                     "weather_factor": f if kwh is not None and weather is not None else None}
@@ -272,6 +285,9 @@ def pv_cycle(ha, cfg, dayahead, nowcast, slot_acc, log, influx=None, snapshot=No
                 "elevation_deg": _r(x_done["elevation"], 2),
             }, ts=prev_slot_start)])
 
+    # --- local station model: calibration learned from the scored days ---------
+    calib = accuracy.local_calibration() if accuracy is not None else 1.0
+
     # --- curve: API slots corrected, missing slots from the station ------------
     factor = nowcast_factor(nowcast_now, dayahead_now) if dayahead_now is not None else 1.0
     values, sources = [], []
@@ -286,7 +302,7 @@ def pv_cycle(ha, cfg, dayahead, nowcast, slot_acc, log, influx=None, snapshot=No
             dt_h = max((s - now).total_seconds() / 3600.0, 0.0)
             wf = weather.day_factor(m.astimezone(tz).date()) if weather is not None else 1.0
             v = None if station is None else station.fallback(m, g, e, a, local_hour(m, cfg.timezone), csi_now, dt_h, wf)
-            values.append(v)
+            values.append(None if v is None else v * calib)
             sources.append("station")
     blended = blend_curve(starts, [v or 0.0 for v in values], now, factor)
     curve = [b if src == "solcast" else v for b, v, src in zip(blended, values, sources)]
@@ -357,6 +373,36 @@ def pv_cycle(ha, cfg, dayahead, nowcast, slot_acc, log, influx=None, snapshot=No
             "source": SOURCE_TEXT,
         })
 
+    # --- local station curve: always computed, independent of Solcast ---------
+    local_curve = None
+    if station is not None and station.ready:
+        local_curve = []
+        for s, m, g, e, a in zip(starts, mids, ghi, elev, azi):
+            dt_h = max((s - now).total_seconds() / 3600.0, 0.0)
+            wf = weather.day_factor(m.astimezone(tz).date()) if weather is not None else 1.0
+            v = station.fallback(m, g, e, a, local_hour(m, cfg.timezone), csi_now, dt_h, wf)
+            local_curve.append(None if v is None else v * calib)
+        if any(v is None for v in local_curve):
+            local_curve = None
+    local_today, _, _ = station_day_kwh(station, weather, today, now, tz, cfg.timezone, calib, csi_now)
+    local_tomorrow, _, local_wf = station_day_kwh(station, weather, today + timedelta(days=1), now, tz,
+                                                  cfg.timezone, calib)
+    if local_curve is not None:
+        ha.set_state(ENTITY_LOCAL_CURVE, round(local_curve[0], 1), attributes={
+            "unit_of_measurement": "W",
+            "device_class": "power",
+            "friendly_name": "PV Forecast Curve (local station)",
+            "forecasts": [{"date": s.isoformat(), "p_pv_forecast": round(v, 1)} for s, v in zip(starts, local_curve)],
+            "today_remaining_kwh": _r(local_today, 2),
+            "tomorrow_kwh": _r(local_tomorrow, 2),
+            "calibration": round(calib, 3),
+            "weather_factor_tomorrow": _r(local_wf, 3),
+            "csi_now": _r(csi_now, 3),
+            "error_local_pct": accuracy.publish_value("local_error_kwh") if accuracy is not None else None,
+            "source": "ha-ml-layer / local weather station only (station plant model, measured and "
+                      "typical cloudiness, local weather outlook) - works without internet",
+        })
+
     log.info(
         "now: source=%s solcast=%s dayahead=%s nowcast=%s factor=%.2f actual=%s station=%s%s | "
         "MAE dayahead=%.1fW vs solcast=%.1fW (n=%d, active=%s) nowcast=%.1fW vs %.1fW (n=%d, active=%s) "
@@ -375,7 +421,8 @@ def pv_cycle(ha, cfg, dayahead, nowcast, slot_acc, log, influx=None, snapshot=No
 
     # --- daily energy for EMHASS soc_final / battery reserve -------------------
     tomorrow = today + timedelta(days=1)
-    energy = daily_energy(rows, now, starts[0], tz, today, tomorrow, dayahead, day_ctx, station, cfg.timezone, weather)
+    energy = daily_energy(rows, now, starts[0], tz, today, tomorrow, dayahead, day_ctx, station, cfg.timezone, weather,
+                          calib)
     for entity, key, name, sec in (
             (ENTITY_TOMORROW_KWH, "tomorrow", "PV Forecast Tomorrow (ML)", secondary_day.get(tomorrow)),
             (ENTITY_TODAY_REMAINING_KWH, "today_remaining", "PV Forecast Today Remaining (ML)", None)):
@@ -400,6 +447,8 @@ def pv_cycle(ha, cfg, dayahead, nowcast, slot_acc, log, influx=None, snapshot=No
             e = energy["tomorrow"]
             if e["source"] in ("ml", "solcast"):
                 accuracy.note_forecast(tomorrow, e["kwh"], e["solcast_kwh"], e["source"])
+            if local_tomorrow is not None and calib > 0:
+                accuracy.note_local(tomorrow, local_tomorrow, local_tomorrow / calib)
         accuracy.add(now, local_now.date(), actual, 2 * cfg.poll_interval + 60, curtailed, low_output)
         accuracy.save()
         accuracy.publish(ha)

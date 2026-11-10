@@ -19,6 +19,9 @@ ENTITY = "sensor.pv_ml_forecast_accuracy"
 KEEP_DAYS = 30
 WINDOW_DAYS = 7
 MIN_COVERAGE = 0.9        # share of the day that must be covered by readings
+CALIB_DAYS = 14           # scored days used for the local model's calibration
+CALIB_MIN_DAYS = 5
+CALIB_CLIP = (0.5, 1.5)
 
 
 class DailyAccuracy:
@@ -56,10 +59,31 @@ class DailyAccuracy:
     def note_forecast(self, day, ml_kwh, solcast_kwh, source):
         """Tomorrow's forecast as known in the evening (first call per day wins)."""
         key = day.isoformat()
-        if key not in self.forecasts and ml_kwh is not None:
-            self.forecasts[key] = {"ml_kwh": round(ml_kwh, 3),
-                                   "solcast_kwh": None if solcast_kwh is None else round(solcast_kwh, 3),
-                                   "source": source}
+        if ml_kwh is not None and "ml_kwh" not in self.forecasts.get(key, {}):
+            self.forecasts.setdefault(key, {}).update({
+                "ml_kwh": round(ml_kwh, 3),
+                "solcast_kwh": None if solcast_kwh is None else round(solcast_kwh, 3),
+                "source": source})
+
+    def note_local(self, day, local_kwh, local_raw_kwh):
+        """Tomorrow's forecast of the local station model alone (no internet data):
+        calibrated (published) and raw (basis of the calibration)."""
+        key = day.isoformat()
+        if local_kwh is not None and "local_kwh" not in self.forecasts.get(key, {}):
+            self.forecasts.setdefault(key, {}).update({
+                "local_kwh": round(local_kwh, 3), "local_raw_kwh": round(local_raw_kwh, 3)})
+
+    def local_calibration(self):
+        """Energy ratio actual / raw local forecast over the last scored days
+        (1.0 until CALIB_MIN_DAYS days are scored). Learned from the raw forecast,
+        so applying it does not feed back into itself."""
+        rows = [r for r in self.history[-CALIB_DAYS:] if r.get("local_raw_kwh")]
+        if len(rows) < CALIB_MIN_DAYS:
+            return 1.0
+        raw = sum(r["local_raw_kwh"] for r in rows)
+        if raw <= 0.5:
+            return 1.0
+        return min(max(sum(r["actual_kwh"] for r in rows) / raw, CALIB_CLIP[0]), CALIB_CLIP[1])
 
     def add(self, now, local_day, actual_w, max_gap_s, curtailed=False, low_output=False):
         """One cycle. Integrates the actual power; closes the previous day at midnight."""
@@ -84,25 +108,35 @@ class DailyAccuracy:
     def _close(self):
         fc = self.forecasts.pop(self.day, None)
         coverage = self.covered_s / 86400.0
-        if fc is None or coverage < MIN_COVERAGE:
+        if not fc or coverage < MIN_COVERAGE:
             log.info("Accuracy: %s not scored (forecast noted: %s, coverage %.0f %%)",
                      self.day, fc is not None, coverage * 100)
             return
         actual = self.energy_wh / 1000.0
-        rec = {"date": self.day, "actual_kwh": round(actual, 2), "ml_kwh": round(fc["ml_kwh"], 2),
-               "solcast_kwh": None if fc["solcast_kwh"] is None else round(fc["solcast_kwh"], 2),
+        rec = {"date": self.day, "actual_kwh": round(actual, 2),
+               "ml_kwh": None if fc.get("ml_kwh") is None else round(fc["ml_kwh"], 2),
+               "solcast_kwh": None if fc.get("solcast_kwh") is None else round(fc["solcast_kwh"], 2),
+               "local_kwh": None if fc.get("local_kwh") is None else round(fc["local_kwh"], 2),
+               "local_raw_kwh": None if fc.get("local_raw_kwh") is None else round(fc["local_raw_kwh"], 2),
                "ml_source": fc.get("source"),
                "curtailed_h": round(self.curtailed_s / 3600.0, 1),
                "low_output_h": round(self.low_output_s / 3600.0, 1)}
-        rec["ml_error_kwh"] = round(rec["ml_kwh"] - actual, 2)
+        rec["ml_error_kwh"] = None if rec["ml_kwh"] is None else round(rec["ml_kwh"] - actual, 2)
+        rec["local_error_kwh"] = None if rec["local_kwh"] is None else round(rec["local_kwh"] - actual, 2)
         rec["solcast_error_kwh"] = None if rec["solcast_kwh"] is None else round(rec["solcast_kwh"] - actual, 2)
         self.history = (self.history + [rec])[-KEEP_DAYS:]
-        log.info("Accuracy: %s actual %.2f kWh | ML %.2f kWh (%+.2f) | Solcast %s kWh (%s) | curtailed %.1f h",
+        log.info("Accuracy: %s actual %.2f kWh | ML %s kWh (%s) | Solcast %s kWh (%s) | local %s kWh (%s) | curtailed %.1f h",
                  self.day, actual, rec["ml_kwh"], rec["ml_error_kwh"], rec["solcast_kwh"],
-                 rec["solcast_error_kwh"], rec["curtailed_h"])
+                 rec["solcast_error_kwh"], rec["local_kwh"], rec["local_error_kwh"], rec["curtailed_h"])
         # forecasts for days that can no longer be scored
         today = date.fromisoformat(self.day)
         self.forecasts = {k: v for k, v in self.forecasts.items() if date.fromisoformat(k) > today}
+
+    def publish_value(self, error_key):
+        """Energy-weighted error in % of one forecast over the last WINDOW_DAYS scored days."""
+        p = [(r[error_key], r["actual_kwh"]) for r in self.history[-WINDOW_DAYS:] if r.get(error_key) is not None]
+        total = sum(a for _, a in p)
+        return None if not p or total <= 0.5 else round(100.0 * sum(abs(e) for e, _ in p) / total, 1)
 
     @staticmethod
     def _pct(err, actual):
@@ -143,10 +177,15 @@ class DailyAccuracy:
             "mean_abs_error_solcast_kwh": mean_abs("solcast_error_kwh"),
             "bias_ml_kwh": bias("ml_error_kwh"),
             "bias_solcast_kwh": bias("solcast_error_kwh"),
+            "error_local_pct": weighted_pct("local_error_kwh"),
+            "mean_abs_error_local_kwh": mean_abs("local_error_kwh"),
+            "bias_local_kwh": bias("local_error_kwh"),
+            "local_calibration": round(self.local_calibration(), 3),
             "yesterday_date": last["date"] if last else None,
             "yesterday_actual_kwh": last["actual_kwh"] if last else None,
             "yesterday_ml_kwh": last["ml_kwh"] if last else None,
             "yesterday_solcast_kwh": last["solcast_kwh"] if last else None,
+            "yesterday_local_kwh": last.get("local_kwh") if last else None,
             "yesterday_ml_error_pct": self._pct(last["ml_error_kwh"], last["actual_kwh"]) if last else None,
             "yesterday_solcast_error_pct": self._pct(last["solcast_error_kwh"], last["actual_kwh"]) if last else None,
             "yesterday_curtailed_h": last["curtailed_h"] if last else None,

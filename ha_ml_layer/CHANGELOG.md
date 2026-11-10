@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.9.1 — 2026-11-10
+
+### Neu: lokales Stationsmodell läuft immer parallel und wird täglich bewertet
+- Neuer Sensor `sensor.pv_local_forecast_curve` ("PV Forecast Curve (local
+  station)"): 48 × 30-min-Kurve nur aus der eigenen Wetterstation
+  (Anlagenmodell, gemessene und typische Bewölkung, lokale Wetterprognose),
+  gleiches Format wie die ML-Kurve (`forecasts` mit `p_pv_forecast`), dazu
+  `today_remaining_kwh`, `tomorrow_kwh`, `calibration`, `error_local_pct`.
+  Wird in jedem Zyklus berechnet, auch wenn Solcast Daten hat.
+- Tägliche Bewertung: die Abendprognose des lokalen Modells für morgen wird wie
+  ML und Solcast gegen die gemessene PV-Energie gewertet
+  (`sensor.pv_ml_forecast_accuracy`: `error_local_pct`,
+  `mean_abs_error_local_kwh`, `bias_local_kwh`, `yesterday_local_kwh`).
+- Selbstkalibrierung: Verhältnis Ist ÷ Rohprognose der letzten 14 gewerteten
+  Tage (ab 5 Tagen, begrenzt 0,5-1,5, Attribut `local_calibration`). Gelernt
+  aus der unkalibrierten Prognose, damit es sich nicht selbst verstärkt.
+- Die kalibrierte Stationsprognose füllt weiterhin jeden Slot ohne Solcast-Daten
+  in `sensor.pv_ml_corrected_forecast_curve` und in den kWh-Sensoren – das ist
+  der Fallback, den EMHASS ohne Internet bekommt.
+
 ## 0.9.0 — 2026-11-10
 
 ### Neu: lokale Wetterprognose aus der eigenen Wetterstation (ohne Internet)
