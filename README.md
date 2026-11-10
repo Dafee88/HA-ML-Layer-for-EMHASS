@@ -55,6 +55,7 @@ Einrichtung, EMHASS-`rest_command` und Beispiel für den Abregelungs-Sensor:
 | `pv_forecast_solar_today` / `_tomorrow` (optional) | `sensor.energy_production_today` | zweite Prognose als Tageswert in kWh (z. B. Forecast.Solar), mehrere Sensoren mit Komma = Summe der Dachflächen |
 | `pv_curtailed_entity` (optional) | `binary_sensor.pv_curtailed` | `on`, solange die PV abgeregelt sein kann (Akku voll, Einspeiselimit) |
 | `pv_reference_irradiance` (optional) | `sensor.reference_global_radiation` | professionelle Station in der Nähe, nur zur Kontrolle der Kalibrierung |
+| `weather_pressure` / `weather_humidity` (optional) | `sensor.pressure_relative` / `sensor.outdoor_humidity` | Luftdruck und Luftfeuchte der Wetterstation für die lokale Wetterprognose (`sensor.pv_ml_local_weather`) |
 | `pv_peak_power_kw` (optional) | `6.5` | Anlagenleistung für nMAE in % |
 
 Nicht als Eingang verwenden: `sensor.p_pv_forecast`. Das ist die Ausgabe von
@@ -92,6 +93,15 @@ Mit `pv_irradiance` übernimmt eine lokale Wetterstation drei Aufgaben:
    gemessene Bewölkung über ~2 h in die typische Bewölkung dieser Uhrzeit
    übergeht. Für die nächsten Stunden brauchbar, für den nächsten Tag nur ein
    Notbehelf. Attribut `forecast_source`: `solcast`, `solcast+station` oder `station`.
+
+**Lokale Wetterprognose (`ha_ml_layer/app/local_weather.py`, ab 0.9.0):** Jeden
+Abend sagt das Add-on den Tages-Clear-Sky-Index von morgen nur aus der eigenen
+Station voraus (heutiger Index, optional Drucktendenz 3 h / 12 h, Druck gegen
+7-Tage-Mittel, Luftfeuchte; Ridge-Regression). Am Folgetag wird die Vorhersage
+gegen den gemessenen Tag gewertet, zusammen mit Klimatologie und Persistenz.
+Nur eine Methode, die die Klimatologie über mindestens 10 Tage schlägt, skaliert
+die typische Bewölkung des Fallbacks. Ausgabe `sensor.pv_ml_local_weather`
+(sunny / partly cloudy / cloudy). Funktioniert ohne Internet.
 
 Der Sensor wird relativ genutzt (Clear-Sky-Index) und auf die Anlage gelernt;
 ein konstanter Messfehler (z. B. Lux-basierte Sensoren) stört daher kaum.
@@ -208,7 +218,7 @@ Eingaben (z. B. ungültige Entity-ID) stehen beim Start als `Configuration:` im 
 |---|---|
 | Allgemein | `poll_interval_seconds` (60–3600, empfohlen 300), `log_level`, `pv_enabled`, `thermal_enabled` |
 | Standort | optional `latitude`, `longitude`, `timezone` (leer = aus der Home-Assistant-Konfiguration) |
-| PV | `pv_solcast_today`, `pv_solcast_tomorrow` (Solcast-Sensoren mit `detailedForecast`), `pv_actual_power` (W), optional `pv_actual_power_fallback`, `pv_irradiance` (Wetterstation), `pv_forecast_solar_today`/`_tomorrow`, `pv_curtailed_entity`, `pv_reference_irradiance`, `pv_peak_power_kw` |
+| PV | `pv_solcast_today`, `pv_solcast_tomorrow` (Solcast-Sensoren mit `detailedForecast`), `pv_actual_power` (W), optional `pv_actual_power_fallback`, `pv_irradiance` (Wetterstation), `pv_forecast_solar_today`/`_tomorrow`, `pv_curtailed_entity`, `pv_reference_irradiance`, `weather_pressure`, `weather_humidity`, `pv_peak_power_kw` |
 | Wärmemodell | `thermal_outdoor_temp`, optional `thermal_outdoor_temp_fallback`, optional `thermal_heating_stage`, `thermal_floors` (pro Etage `name`, `temperature_sensor`, optional `temperature_sensor_fallback` und `heating_switch` oder `climate`) |
 | InfluxDB | `influxdb_enabled`, `influxdb_host` (InfluxDB-Add-on: `a0d7b954-influxdb`), `influxdb_port`, `influxdb_ssl`, `influxdb_database`, `influxdb_username`, `influxdb_password`, `influxdb_dayahead_snapshot_hour` |
 

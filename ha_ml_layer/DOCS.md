@@ -29,6 +29,8 @@ Install and set up these before starting the add-on.
   The ML layer writes to it directly. The InfluxDB *integration*
   (<https://www.home-assistant.io/integrations/influxdb/>) is only needed if
   Home Assistant itself should also store its history there.
+- **Air pressure and humidity of the weather station** (optional) – inputs of
+  the local weather outlook (section 3), works without internet.
 - **Reference station** for the calibration check of your own sensor, e.g.
   GeoSphere Austria: <https://www.home-assistant.io/integrations/zamg/>.
 - **Curtailment sensor** – see section 5.
@@ -70,6 +72,27 @@ through unchanged.
   `bias_solcast_kwh` (mean signed error, positive = forecast too high), the
   values of the last scored day (`yesterday_*`) and the daily `history`.
   Days with less than 90 % readings are not scored.
+
+- `sensor.pv_ml_local_weather` ("Local Weather Outlook (station)", needs
+  `pv_irradiance`) – tomorrow's cloudiness from your own station only, so it
+  also works without internet (power cut, API down). State `sunny` / `partly
+  cloudy` / `cloudy` (daily clear-sky index >= 0.7 / >= 0.4 / below) or
+  `unknown`. Every evening at the snapshot hour it predicts the next day's
+  daily clear-sky index (measured / clear-sky irradiance, sun >= 10°) with a
+  ridge regression on today's index and, if configured, the pressure change
+  over 3 h and 12 h, the pressure against its 7-day mean (`weather_pressure`)
+  and the humidity (`weather_humidity`). The next evening the prediction is
+  scored against the measured day, together with climatology (mean of the
+  last 30 days) and persistence (today = tomorrow). Only a method that beats
+  climatology over at least 10 scored days is used (`forecast_method`,
+  `fallback_active`); then the station fallback for that day scales its
+  typical cloudiness by predicted / climatology (`fallback_factor`, also on
+  `sensor.pv_ml_forecast_*_kwh` as `local_weather_factor`). While Solcast has
+  data nothing changes. Also `pressure_hpa`, `pressure_tendency_3h_hpa` and
+  `pressure_tendency` (Met Office terms: steady, rising/falling slowly,
+  rising/falling, quickly, very rapidly), the MAE of each method and the
+  number of days. With InfluxDB the days are rebuilt from history at the first
+  start (and when the inputs change). State file `/data/local_weather_v1.json`.
 
 **Low output (snow, shading, faults):** with a weather station, PV power below
 50 % of the station's potential (potential at least 300 W) while not curtailed

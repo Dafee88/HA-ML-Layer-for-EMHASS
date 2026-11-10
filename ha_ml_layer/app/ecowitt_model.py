@@ -138,13 +138,16 @@ class StationModel:
         return sum(learned) / len(learned) if learned else None
 
     # --- fallback forecast ---
-    def fallback(self, slot_mid, clear_sky_ghi, elevation, azimuth, local_hour, csi_now, dt_h):
-        """PV power for one future slot from the station alone, or None."""
+    def fallback(self, slot_mid, clear_sky_ghi, elevation, azimuth, local_hour, csi_now, dt_h, day_factor=1.0):
+        """PV power for one future slot from the station alone, or None.
+        day_factor scales the typical cloudiness (local weather outlook, 1.0 = off)."""
         if elevation <= 0:
             return 0.0
         if not self.ready:
             return None
         typical = self.typical_csi(local_hour)
+        if typical is not None:
+            typical = min(typical * day_factor, CSI_MAX)
         if typical is None and csi_now is None:
             return None
         if typical is None:

@@ -30,6 +30,7 @@ from pv_model import (
 from building_thermal import EMHASS_SENSOR, BuildingThermalModel
 from history import learn_from_history
 from accuracy import DailyAccuracy
+from local_weather import LocalWeatherModel, to_hpa
 
 ENTITY_TOMORROW_KWH = "sensor.pv_ml_forecast_tomorrow_kwh"
 ENTITY_TODAY_REMAINING_KWH = "sensor.pv_ml_forecast_today_remaining_kwh"
@@ -74,7 +75,7 @@ def _sum_states(states, entities):
     return None if any(v is None for v in vals) else sum(vals)
 
 
-def daily_energy(rows, now, slot0, tz, today, tomorrow, dayahead, day_ctx, station, tz_name):
+def daily_energy(rows, now, slot0, tz, today, tomorrow, dayahead, day_ctx, station, tz_name, weather=None):
     """kWh for tomorrow and for the rest of today.
 
     Solcast slots go through the day-ahead model (= raw Solcast while the model
@@ -103,17 +104,19 @@ def daily_energy(rows, now, slot0, tz, today, tomorrow, dayahead, day_ctx, stati
             slots = [s for s in slots if s + SLOT > now]
             mids = [s + SLOT_MID for s in slots]
             ghi, elev, azi = solar_position(mids) if mids else ([], [], [])
-            vals = [station.fallback(m, g, e, a, local_hour(m, tz_name), None, 99.0)
+            f = weather.day_factor(day) if weather is not None else 1.0
+            vals = [station.fallback(m, g, e, a, local_hour(m, tz_name), None, 99.0, f)
                     for m, g, e, a in zip(mids, ghi, elev, azi)]
             if vals and all(v is not None for v in vals):
                 kwh, n = sum(vals) * 0.5 / 1000.0, len(vals)
         out[key] = {"kwh": kwh, "solcast_kwh": None, "slots": n,
-                    "source": "station" if kwh is not None else "none"}
+                    "source": "station" if kwh is not None else "none",
+                    "weather_factor": f if kwh is not None and weather is not None else None}
     return out
 
 
 def pv_cycle(ha, cfg, dayahead, nowcast, slot_acc, log, influx=None, snapshot=None, station=None,
-             accuracy=None, low=None):
+             accuracy=None, low=None, weather=None):
     """One cycle (default 5 min).
 
     Primary: Solcast (+ optional second provider) corrected by the day-ahead
@@ -125,7 +128,8 @@ def pv_cycle(ha, cfg, dayahead, nowcast, slot_acc, log, influx=None, snapshot=No
     tz = ZoneInfo(cfg.timezone)
     wanted = [cfg.pv_solcast_today, cfg.pv_solcast_tomorrow, cfg.pv_actual_power,
               cfg.pv_actual_power_fallback, cfg.pv_irradiance, cfg.pv_curtailed,
-              cfg.pv_reference_irradiance, cfg.thermal_outdoor_temp, cfg.thermal_outdoor_temp_fallback] \
+              cfg.pv_reference_irradiance, cfg.thermal_outdoor_temp, cfg.thermal_outdoor_temp_fallback,
+              cfg.weather_pressure, cfg.weather_humidity] \
         + cfg.pv_secondary_today + cfg.pv_secondary_tomorrow
     states = ha.get_states([e for e in wanted if e])
     now = datetime.now(timezone.utc)
@@ -213,6 +217,24 @@ def pv_cycle(ha, cfg, dayahead, nowcast, slot_acc, log, influx=None, snapshot=No
     if station is not None:
         station.save()
 
+    # --- local weather outlook (offline fallback for tomorrow's cloudiness) ----
+    pressure_hpa = humidity = None
+    if weather is not None:
+        if cfg.weather_pressure:
+            pressure_hpa = to_hpa(_safe_float(states.get(cfg.weather_pressure)),
+                                  _attr(states, cfg.weather_pressure, "unit_of_measurement"))
+        if cfg.weather_humidity:
+            humidity = _safe_float(states.get(cfg.weather_humidity))
+            if humidity is not None and not 0 <= humidity <= 100:
+                humidity = None
+        weather.add_irradiance(now, irradiance, ghi_now, elev_now)
+        weather.add_pressure(now, pressure_hpa)
+        if weather.evening(now, humidity):
+            p = weather.pending or {}
+            log.info("Local weather: outlook for %s csi regression=%s climatology=%s persistence=%s, used: %s",
+                     p.get("date"), p.get("model"), p.get("clim"), p.get("persist"), weather.best() or "climatology")
+        weather.save()
+
     # what the forecast models learn from: the actual power, or -- while the
     # inverter curtails -- the potential power seen by the station
     if curtailed:
@@ -262,7 +284,8 @@ def pv_cycle(ha, cfg, dayahead, nowcast, slot_acc, log, influx=None, snapshot=No
             sources.append("night")
         else:
             dt_h = max((s - now).total_seconds() / 3600.0, 0.0)
-            v = None if station is None else station.fallback(m, g, e, a, local_hour(m, cfg.timezone), csi_now, dt_h)
+            wf = weather.day_factor(m.astimezone(tz).date()) if weather is not None else 1.0
+            v = None if station is None else station.fallback(m, g, e, a, local_hour(m, cfg.timezone), csi_now, dt_h, wf)
             values.append(v)
             sources.append("station")
     blended = blend_curve(starts, [v or 0.0 for v in values], now, factor)
@@ -352,7 +375,7 @@ def pv_cycle(ha, cfg, dayahead, nowcast, slot_acc, log, influx=None, snapshot=No
 
     # --- daily energy for EMHASS soc_final / battery reserve -------------------
     tomorrow = today + timedelta(days=1)
-    energy = daily_energy(rows, now, starts[0], tz, today, tomorrow, dayahead, day_ctx, station, cfg.timezone)
+    energy = daily_energy(rows, now, starts[0], tz, today, tomorrow, dayahead, day_ctx, station, cfg.timezone, weather)
     for entity, key, name, sec in (
             (ENTITY_TOMORROW_KWH, "tomorrow", "PV Forecast Tomorrow (ML)", secondary_day.get(tomorrow)),
             (ENTITY_TODAY_REMAINING_KWH, "today_remaining", "PV Forecast Today Remaining (ML)", None)):
@@ -366,7 +389,10 @@ def pv_cycle(ha, cfg, dayahead, nowcast, slot_acc, log, influx=None, snapshot=No
             "secondary_kwh": _r(sec, 2) if key == "tomorrow" else None,
             "slots": e["slots"],
             "model_active": dayahead.active,
+            "local_weather_factor": _r(e.get("weather_factor"), 3),
         })
+    if weather is not None:
+        weather.publish(ha, now, pressure_hpa)
 
     local_now = now.astimezone(tz)
     if accuracy is not None:
@@ -411,6 +437,8 @@ def pv_cycle(ha, cfg, dayahead, nowcast, slot_acc, log, influx=None, snapshot=No
         "tomorrow_kwh": _r(energy["tomorrow"]["kwh"], 2),
         "tomorrow_solcast_kwh": _r(energy["tomorrow"]["solcast_kwh"], 2),
         "today_remaining_kwh": _r(energy["today_remaining"]["kwh"], 2),
+        "pressure_hpa": _r(pressure_hpa, 2),
+        "local_weather_csi_forecast": _r((weather.pending or {}).get("model"), 4) if weather else None,
     }, ts=now)])
 
     # once per evening: what EMHASS plans with for tomorrow (raw forecasts + ML curve)
@@ -489,6 +517,8 @@ def run():
         max(1, round(MIN_SLOT_COVERAGE * SLOT.total_seconds() / cfg.poll_interval)))
     station = StationModel() if cfg.pv_enabled and cfg.pv_irradiance else None
     thermal = BuildingThermalModel(cfg, max_gap_s=2 * cfg.poll_interval + 60) if cfg.thermal_enabled else None
+    weather = LocalWeatherModel(bool(cfg.weather_pressure), bool(cfg.weather_humidity), cfg.timezone,
+                                cfg.influx_snapshot_hour) if station is not None else None
 
     influx = None
     if cfg.influx_enabled:
@@ -501,6 +531,11 @@ def run():
                 thermal.backfill(influx)
             except Exception:
                 log.exception("Thermal history: rebuilding from InfluxDB failed, live learning continues")
+        if weather is not None:
+            try:
+                weather.backfill(influx, cfg.pv_irradiance, cfg.weather_pressure, cfg.weather_humidity)
+            except Exception:
+                log.exception("Local weather history: rebuilding from InfluxDB failed, live learning continues")
         if dayahead is not None and cfg.influx_learn_history:
             try:
                 dayahead = learn_from_history(influx, cfg, station, dayahead)
@@ -511,10 +546,11 @@ def run():
     low = {}
 
     log.info("ha-ml-layer started. Poll interval: %ss | pv=%s thermal=%s influx=%s station=%s "
-             "second provider=%s curtailment=%s reference=%s | site %.3f/%.3f %s",
+             "second provider=%s curtailment=%s reference=%s local weather=%s | site %.3f/%.3f %s",
              cfg.poll_interval, cfg.pv_enabled, cfg.thermal_enabled, cfg.influx_enabled,
              station is not None, bool(cfg.pv_secondary_today), bool(cfg.pv_curtailed),
-             bool(cfg.pv_reference_irradiance), cfg.latitude, cfg.longitude, cfg.timezone)
+             bool(cfg.pv_reference_irradiance),
+             "off" if weather is None else "+".join(weather.features), cfg.latitude, cfg.longitude, cfg.timezone)
 
     next_cycle = time.monotonic()
     while True:
@@ -529,7 +565,7 @@ def run():
             if dayahead is not None:
                 try:
                     pv_cycle(ha, cfg, dayahead, nowcast, slot_acc, log, influx, snapshot, station,
-                             accuracy, low)
+                             accuracy, low, weather)
                 except Exception:
                     log.exception("Error in PV cycle, retrying next interval.")
         else:

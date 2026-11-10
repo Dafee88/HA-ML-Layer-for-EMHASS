@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.9.0 — 2026-11-10
+
+### Neu: lokale Wetterprognose aus der eigenen Wetterstation (ohne Internet)
+- Neuer Sensor `sensor.pv_ml_local_weather` ("Local Weather Outlook (station)"):
+  Bewölkung für morgen als `sunny` / `partly cloudy` / `cloudy`, dazu
+  Luftdruck, 3-h-Drucktendenz (Met-Office-Begriffe) und die Fehler je Methode.
+- Jeden Abend (Snapshot-Stunde, Standard 20 Uhr) wird der Tages-Clear-Sky-Index
+  von morgen vorhergesagt: Ridge-Regression auf heutigen Index und, wenn
+  gesetzt, Druckänderung 3 h / 12 h, Druck gegen 7-Tage-Mittel und Luftfeuchte.
+- Ehrliche Freigabe: jede Vorhersage wird am Folgetag gegen den gemessenen Tag
+  gewertet, zusammen mit Klimatologie (Mittel der letzten 30 Tage) und
+  Persistenz. Nur eine Methode, die die Klimatologie über mindestens 10 Tage
+  schlägt, wird genutzt.
+- Wirkung nur im Stations-Fallback (keine Solcast-Daten): die typische Bewölkung
+  je Stunde wird mit Vorhersage ÷ Klimatologie skaliert (Attribut
+  `local_weather_factor` an `sensor.pv_ml_forecast_*_kwh`). Mit Solcast-Daten
+  ändert sich nichts.
+- Neue Optionen `weather_pressure` (hPa, inHg, mmHg, kPa oder Pa laut
+  `unit_of_measurement`) und `weather_humidity` (%), beide optional.
+- Mit InfluxDB werden beim ersten Start (und bei geänderten Eingängen) bis zu
+  120 Tage aus der Historie nachgebaut. Speicher `/data/local_weather_v1.json`.
+
 ## 0.8.4 — 2026-11-06
 
 ### Behoben: Heizenergie beim Nachlernen aus InfluxDB bis zu 20-fach zu hoch

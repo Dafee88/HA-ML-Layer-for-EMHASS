@@ -50,6 +50,12 @@ configuration:
   pv_reference_irradiance:
     name: Reference irradiance (W/m²)
     description: Optional nearby professional station (e.g. GeoSphere/DWD integration). Only used to track the calibration factor of your own sensor (attribute irradiance_vs_reference).
+  weather_pressure:
+    name: Air pressure (local weather outlook)
+    description: Optional pressure sensor of your weather station (hPa, inHg, mmHg, kPa or Pa via unit_of_measurement). With pv_irradiance it feeds the local weather outlook (sensor.pv_ml_local_weather), which works without internet and sharpens the offline fallback for the next day.
+  weather_humidity:
+    name: Relative humidity (local weather outlook)
+    description: Optional outdoor humidity sensor (%) of your weather station, extra input for the local weather outlook.
   pv_peak_power_kw:
     name: PV peak power (kWp)
     description: Optional. Used to report the error as nMAE in percent of the peak power.

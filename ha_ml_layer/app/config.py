@@ -89,6 +89,8 @@ class Config:
         self.pv_secondary_tomorrow = _entity_list(opts, "pv_forecast_solar_tomorrow", problems)
         self.pv_curtailed = _entity(opts, "pv_curtailed_entity", "", problems)
         self.pv_reference_irradiance = _entity(opts, "pv_reference_irradiance", "", problems)
+        self.weather_pressure = _entity(opts, "weather_pressure", "", problems)
+        self.weather_humidity = _entity(opts, "weather_humidity", "", problems)
         kwp = opts.get("pv_peak_power_kw")
         self.pv_peak_power_kw = float(kwp) if kwp not in (None, "") and float(kwp) > 0 else None
 
