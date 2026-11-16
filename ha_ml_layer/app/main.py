@@ -577,7 +577,7 @@ def run():
         log_influx_inventory(influx, cfg, log)
         if thermal is not None:
             try:
-                thermal.backfill(influx)
+                thermal.backfill(influx, ha=ha)
             except Exception:
                 log.exception("Thermal history: rebuilding from InfluxDB failed, live learning continues")
         if weather is not None:

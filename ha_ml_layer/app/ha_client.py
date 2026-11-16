@@ -31,6 +31,33 @@ class HAClient:
         r.raise_for_status()
         return r.json()
 
+    def unavailable_periods(self, entity_id: str, start, end) -> list[tuple[float, float]]:
+        """[(from_epoch, to_epoch)] in which the recorder has the entity as unavailable/unknown.
+
+        InfluxDB never stores these states, so they are only visible here (as far back as the
+        recorder keeps history, by default 10 days). Raises on HTTP errors."""
+        from datetime import datetime
+        r = requests.get(
+            f"{self.base_url}/api/history/period/{start.isoformat()}",
+            headers=self.headers, timeout=60,
+            params={"filter_entity_id": entity_id, "end_time": end.isoformat(),
+                    "minimal_response": "", "no_attributes": "", "significant_changes_only": "0"})
+        r.raise_for_status()
+        data = r.json()
+        rows = data[0] if data else []
+        out, since = [], None
+        for row in rows:
+            t = datetime.fromisoformat(row.get("last_changed") or row.get("last_updated")).timestamp()
+            bad = row.get("state") in ("unavailable", "unknown")
+            if bad and since is None:
+                since = t
+            elif not bad and since is not None:
+                out.append((since, t))
+                since = None
+        if since is not None:
+            out.append((since, end.timestamp()))
+        return out
+
     def get_states(self, entity_ids: list[str]) -> dict[str, dict]:
         result = {}
         for eid in entity_ids:

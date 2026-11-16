@@ -2,25 +2,27 @@
 
 ## 0.9.2 — 2026-11-16
 
-### Fix: Gebäudemodell lernt keine Ausfallzeiten der Heizungsdaten mehr als "0 W"
+### Fix: Gebäudemodell lernt Ausfallzeiten der Heizungsdaten nicht mehr als "0 W"
 - Ursache: Fiel der Heizleistungssensor aus (Optolink/Raspberry Pi 13.-15.11.,
-  ~46 h), liefert InfluxDB dafür keine Punkte (HA schreibt nur Änderungen und
-  nie "unavailable"). Beim Neustart füllte der Rebuild aus der Historie die
-  Lücke mit dem letzten Wert (0 W) auf, obwohl die Wärmepumpe weiterheizte:
-  das Modell lernte ein Haus, das ohne Heizung warm bleibt (`heating_rate`
-  0,23 statt ~0,35-0,4, `rmse_24h` 1,6 K gegen 1,05 K "Temperatur bleibt",
-  `valid` false).
-- Heizleistung ohne neuen Punkt für mehr als 12 h gilt als unbekannt (nicht
-  mehr als "letzter Wert"); die ganze Strecke fehlt dann im Training, und
-  24-h-Fenster, die sie berühren, werden nicht genutzt.
+  ~46 h `unavailable`), hat InfluxDB dafür keine Punkte (HA schreibt nur
+  Änderungen und nie "unavailable"). Beim Neustart füllte der Rebuild aus der
+  Historie die Lücke mit dem letzten Wert (0 W), obwohl die Wärmepumpe
+  weiterheizte: das Modell lernte ein Haus, das ohne Heizung warm bleibt.
+- Neu: beim Rebuild werden die Zeiten entfernt, in denen der HA-Recorder einen
+  Eingangssensor als `unavailable`/`unknown` führt (REST `/api/history`,
+  soweit der Recorder Historie hat, Standard 10 Tage). Echte lange 0-W-Phasen
+  (Heizung aus) bleiben im Training.
 - Slots, in denen der Live-Poll keine brauchbaren Daten hatte, werden gemerkt
   und beim Rebuild nicht aus der Historie aufgefüllt.
 - Speicher `building_thermal_v7.json`: beim Update werden alle Slots einmal neu
-  aus InfluxDB aufgebaut (die verfälschten Slots der v6-Datei entfallen). Nach
-  der Lücke sind rund 2 Tage sauberer Test nötig, bevor `valid` wieder gelten
-  kann.
-- Test (synthetisches Haus, 46-h-Ausfall mitten in der Historie): alt
-  `heating_rate` 0,089, neu 0,369 (wahr 0,4).
+  aus InfluxDB aufgebaut (die verfälschten Slots der v6-Datei entfallen).
+- Nachgerechnet mit den echten Daten 27.10.-16.11.: bisher `heating_rate` 0,223,
+  `rmse_24h` 1,52 K gegen 1,05 K "Temperatur bleibt" (ungültig, entspricht dem
+  Live-Wert); saubere Daten bis zum Ausfall: 0,326 / 0,40 K gegen 0,45 K
+  (gültig). Mit Fix ist bis ~17.11. morgens kein vollständiges Testfenster nach
+  dem Ausfall da ("collecting data"), danach wird neu bewertet.
+- Verworfen: eine starre 12-h-Regel ohne neuen Messpunkt hätte auch echte
+  Heizpausen gestrichen (nur noch 7,7 statt 15,6 Trainingstage).
 
 ## 0.9.1 — 2026-11-10
 

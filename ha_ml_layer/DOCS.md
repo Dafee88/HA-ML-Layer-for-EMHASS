@@ -207,7 +207,7 @@ each floor = `sensor.building_thermal_<floor>`):
 Data: 30-min slots, rebuilt at start from Home Assistant's InfluxDB history
 (last 35 days, needs `influxdb_enabled` and a `heating_power_sensor`), then
 live. InfluxDB stores no "unavailable", so a value is carried forward for at
-most 12 h for a temperature sensor that has a fallback (other sensors: until their next change; exception `heating_power_sensor`: if it has no point for more than 12 h the whole stretch counts as unknown, because a heating that was offline would otherwise look like "0 W"). Slots in which the live poll had no usable data are remembered and not filled from the history either. Optional per floor: `temperature_sensor_fallback` (e.g. the
+most 12 h for a temperature sensor that has a fallback (other sensors: until their next change). Periods in which Home Assistant's recorder has an input sensor `unavailable`/`unknown` are removed (as far back as the recorder keeps history, default 10 days) - otherwise a heating whose data link was down would look like "last value, e.g. 0 W" for that time. Slots in which the live poll had no usable data are remembered and not filled from the history either. Optional per floor: `temperature_sensor_fallback` (e.g. the
 thermostat's own temperature sensor) - used while `temperature_sensor` is
 unavailable, corrected by the learned difference between both sensors
 (attribute `fallback_offset` of `sensor.building_thermal_<floor>`). The fit runs at start and every 24 h (a few seconds).

@@ -55,8 +55,6 @@ MIN_TRAIN_DAYS = 4
 FIT_INTERVAL_H = 24
 STALE_S = 12 * 3600         # InfluxDB keeps no "unavailable": a main temperature sensor WITH fallback
                             # is carried at most 12 h (others: unlimited - HA writes only changes)
-POWER_GAP_S = 12 * 3600     # heating power: no state change for this long = sensor was down (HA writes only
-                            # changes and never "unavailable"), the whole stretch is unknown, not "last value"
 OFFSET_ALPHA = 0.02         # EMA of (main - fallback) temperature while both report
 VALID_TOLERANCE_K = 0.1
 MIN_SLOT_SHARE = 0.5        # slot needs half of its polls
@@ -273,35 +271,24 @@ class BuildingThermalModel:
         return _buckets(influx, entity_id, start, end, max_carry=max_carry, lookback=STALE_S)
 
     @staticmethod
-    def _power_series(influx, entity_id, start, end):
-        """Heating power buckets; a stretch of more than POWER_GAP_S without any point is NOT carried.
+    def _mask_unavailable(series, periods):
+        """Drop buckets inside periods in which Home Assistant had the sensor unavailable/unknown.
 
-        Home Assistant writes only changes and never "unavailable". A heat pump that was offline for
-        two days (Optolink/Pi down) looks like "0 W for two days" if the last value is carried -
-        but it kept heating, so the fit learned a house that stays warm without heat."""
-        from history import _buckets
-        carried = _buckets(influx, entity_id, start, end, max_carry=None, lookback=STALE_S)
-        raw = _buckets(influx, entity_id, start, end, max_carry=0, lookback=STALE_S)
-        keys = sorted(raw)
-        if not keys:
-            return {}
-        drop = []
-        for a, b in zip(keys, keys[1:]):
-            if b - a > POWER_GAP_S:
-                drop.append((a, b))
-        if int(end.timestamp()) - keys[-1] > POWER_GAP_S:
-            drop.append((keys[-1], None))
-        for a, b in drop:
-            for t in [t for t in carried if t > a and (b is None or t < b)]:
-                del carried[t]
-        if drop:
-            log.info("Thermal history: %s has %d stretch(es) without data longer than %d h (e.g. from %s) - not carried",
-                     entity_id, len(drop), POWER_GAP_S // 3600,
-                     datetime.fromtimestamp(drop[0][0], timezone.utc).strftime("%d.%m. %H:%M UTC"))
-        return carried
+        InfluxDB stores no "unavailable", so without this a heat pump whose data link was down for
+        two days looks like "last value (0 W) for two days" - while it kept heating, and the fit
+        learned a house that stays warm without heat (13.-15.11.2026)."""
+        n = 0
+        for a, b in periods:
+            for t in [t for t in series if a - 300 < t < b]:      # 5-min bucket overlapping the period
+                del series[t]
+                n += 1
+        return n
 
-    def backfill(self, influx, now=None):
-        """Rebuild 30-min slots from Home Assistant's InfluxDB history (read-only)."""
+    def backfill(self, influx, now=None, ha=None):
+        """Rebuild 30-min slots from Home Assistant's InfluxDB history (read-only).
+
+        ha: optional HA client; periods in which the recorder has a sensor unavailable/unknown
+        are removed (InfluxDB cannot tell them from "value unchanged")."""
         if not self.power_sensors:
             log.info("Thermal history: no heating_power_sensor configured, learning from live data only")
             return
@@ -312,8 +299,20 @@ class BuildingThermalModel:
         for e in [self.outdoor, self.outdoor_fallback, self.irradiance] + self.power_sensors \
                 + [c["temp"] for c in self.floors.values()] + [c.get("temp_fallback") for c in self.floors.values()]:
             if e and e not in series:
-                series[e] = (self._power_series(influx, e, start, end) if e in self.power_sensors
-                             else self._series(influx, e, start, end, STALE_S if e in limited else None))
+                series[e] = self._series(influx, e, start, end, STALE_S if e in limited else None)
+                if ha is not None:
+                    try:
+                        periods = ha.unavailable_periods(e, start, end)
+                    except Exception as exc:
+                        log.warning("Thermal history: no recorder history for %s (%s), unavailable periods not removed",
+                                    e, exc)
+                        periods = []
+                    n = self._mask_unavailable(series[e], periods)
+                    if n:
+                        log.info("Thermal history: %s was unavailable in %d period(s), %.1f h removed (longest from %s)",
+                                 e, len(periods), n * 300 / 3600.0,
+                                 datetime.fromtimestamp(max(periods, key=lambda p: p[1] - p[0])[0],
+                                                        timezone.utc).strftime("%d.%m. %H:%M UTC"))
         b = 300
         first = int(start.timestamp()) // SLOT_S * SLOT_S
         slots = list(range(first, int(end.timestamp()) // SLOT_S * SLOT_S, SLOT_S))
