@@ -42,7 +42,7 @@ import numpy as np
 
 log = logging.getLogger("building_thermal")
 
-STATE_FILE = "/data/building_thermal_v6.json"   # v6: rebuilt (0.8.4 carry last value, not bucket mean)
+STATE_FILE = "/data/building_thermal_v7.json"   # v7: rebuilt (0.9.2 no carried heating power across outages)
 
 SLOT_S = 1800
 DT_H = SLOT_S / 3600.0
@@ -55,6 +55,8 @@ MIN_TRAIN_DAYS = 4
 FIT_INTERVAL_H = 24
 STALE_S = 12 * 3600         # InfluxDB keeps no "unavailable": a main temperature sensor WITH fallback
                             # is carried at most 12 h (others: unlimited - HA writes only changes)
+POWER_GAP_S = 12 * 3600     # heating power: no state change for this long = sensor was down (HA writes only
+                            # changes and never "unavailable"), the whole stretch is unknown, not "last value"
 OFFSET_ALPHA = 0.02         # EMA of (main - fallback) temperature while both report
 VALID_TOLERANCE_K = 0.1
 MIN_SLOT_SHARE = 0.5        # slot needs half of its polls
@@ -247,6 +249,11 @@ class BuildingThermalModel:
         a, self.acc = self.acc, None
         need = max(1, int(MIN_SLOT_SHARE * SLOT_S / self.poll_s))
         if min(len(a["to"]), len(a["p"])) < need or any(len(v) < need for v in a["t"].values()):
+            if a["n"] >= need:      # a full slot of polls without usable data: remember it, the
+                gaps = self.result.setdefault("gaps", [])      # InfluxDB rebuild must not fill it
+                gaps.append(a["slot"])
+                cutoff = a["slot"] - HISTORY_DAYS * 86400
+                self.result["gaps"] = [g for g in gaps if g >= cutoff]
             return
         self.slots[a["slot"]] = {"t": {f: sum(v) / len(v) for f, v in a["t"].items()},
                                  "to": sum(a["to"]) / len(a["to"]),
@@ -265,6 +272,34 @@ class BuildingThermalModel:
         from history import _buckets
         return _buckets(influx, entity_id, start, end, max_carry=max_carry, lookback=STALE_S)
 
+    @staticmethod
+    def _power_series(influx, entity_id, start, end):
+        """Heating power buckets; a stretch of more than POWER_GAP_S without any point is NOT carried.
+
+        Home Assistant writes only changes and never "unavailable". A heat pump that was offline for
+        two days (Optolink/Pi down) looks like "0 W for two days" if the last value is carried -
+        but it kept heating, so the fit learned a house that stays warm without heat."""
+        from history import _buckets
+        carried = _buckets(influx, entity_id, start, end, max_carry=None, lookback=STALE_S)
+        raw = _buckets(influx, entity_id, start, end, max_carry=0, lookback=STALE_S)
+        keys = sorted(raw)
+        if not keys:
+            return {}
+        drop = []
+        for a, b in zip(keys, keys[1:]):
+            if b - a > POWER_GAP_S:
+                drop.append((a, b))
+        if int(end.timestamp()) - keys[-1] > POWER_GAP_S:
+            drop.append((keys[-1], None))
+        for a, b in drop:
+            for t in [t for t in carried if t > a and (b is None or t < b)]:
+                del carried[t]
+        if drop:
+            log.info("Thermal history: %s has %d stretch(es) without data longer than %d h (e.g. from %s) - not carried",
+                     entity_id, len(drop), POWER_GAP_S // 3600,
+                     datetime.fromtimestamp(drop[0][0], timezone.utc).strftime("%d.%m. %H:%M UTC"))
+        return carried
+
     def backfill(self, influx, now=None):
         """Rebuild 30-min slots from Home Assistant's InfluxDB history (read-only)."""
         if not self.power_sensors:
@@ -277,7 +312,8 @@ class BuildingThermalModel:
         for e in [self.outdoor, self.outdoor_fallback, self.irradiance] + self.power_sensors \
                 + [c["temp"] for c in self.floors.values()] + [c.get("temp_fallback") for c in self.floors.values()]:
             if e and e not in series:
-                series[e] = self._series(influx, e, start, end, STALE_S if e in limited else None)
+                series[e] = (self._power_series(influx, e, start, end) if e in self.power_sensors
+                             else self._series(influx, e, start, end, STALE_S if e in limited else None))
         b = 300
         first = int(start.timestamp()) // SLOT_S * SLOT_S
         slots = list(range(first, int(end.timestamp()) // SLOT_S * SLOT_S, SLOT_S))
@@ -299,8 +335,9 @@ class BuildingThermalModel:
                     offsets[f] = round(sum(diffs) / len(diffs), 3)
                     log.info("Thermal history: %s fallback offset %+.2f K from %d slots", f, offsets[f], len(diffs))
         n_new = n_fb = 0
+        gaps = set(self.result.get("gaps") or [])
         for slot in slots:
-            if slot in self.slots:
+            if slot in self.slots or slot in gaps:
                 continue
             temps = {}
             for f, c in self.floors.items():
