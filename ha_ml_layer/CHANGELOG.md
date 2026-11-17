@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.9.3 — 2026-11-17
+
+### Gebäudemodell: robuster nach Datenlücken
+- Testtage = die jüngsten vollständigen 24-h-Fenster (ohne Lücke genau wie
+  bisher "die letzten 2 Tage"). Nach einer Lücke werden die sauberen Tage davor
+  genutzt, solange das Fenster höchstens 4 Tage alt ist. Bisher blieb das Modell
+  nach jedem Ausfall ~1,5 Tage "collecting data" und EMHASS bekam keinen
+  gültigen Wert.
+- Nachgerechnet mit den echten Daten 27.10.-16.11. (Ausfall 13.-15.11.
+  entfernt): 0.9.2 "collecting data", 0.9.3 sofort gültig mit `heating_rate`
+  0,326, `cooling_constant` 0,00543, `thermal_inertia` 4,5 h, `rmse_24h`
+  0,40 K gegen 0,45 K. Ohne Lücke identisch zu 0.9.2.
+- Slots, die wegen eines im Recorder `unavailable` geführten Sensors nicht
+  gebaut wurden, werden gemerkt: wenn der Recorder diese Zeit später gelöscht
+  hat, füllt InfluxDB allein sie sonst wieder mit dem letzten Wert auf.
+- Die Recorder-Abfrage beim Start wird bis zu 3× im Abstand von 30 s
+  wiederholt (HA startet nach einem Host-Neustart evtl. später als das Add-on).
+
 ## 0.9.2 — 2026-11-16
 
 ### Fix: Gebäudemodell lernt Ausfallzeiten der Heizungsdaten nicht mehr als "0 W"

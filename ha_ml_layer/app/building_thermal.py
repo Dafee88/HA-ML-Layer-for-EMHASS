@@ -57,6 +57,7 @@ STALE_S = 12 * 3600         # InfluxDB keeps no "unavailable": a main temperatur
                             # is carried at most 12 h (others: unlimited - HA writes only changes)
 OFFSET_ALPHA = 0.02         # EMA of (main - fallback) temperature while both report
 VALID_TOLERANCE_K = 0.1
+MAX_TEST_AGE_S = 4 * 86400  # test windows must have ended within this time, else "collecting data"
 MIN_SLOT_SHARE = 0.5        # slot needs half of its polls
 MIN_HEATING_KWH = 2.0       # heating energy in the training data, else heating_rate is not identifiable
 K_BOUNDS = (0.0005, 0.2)
@@ -296,17 +297,25 @@ class BuildingThermalModel:
         start = end - timedelta(days=HISTORY_DAYS)
         limited = {c["temp"] for c in self.floors.values() if c.get("temp_fallback")}
         series = {}
+        masked = set()      # slots touched by a period in which an input was unavailable
         for e in [self.outdoor, self.outdoor_fallback, self.irradiance] + self.power_sensors \
                 + [c["temp"] for c in self.floors.values()] + [c.get("temp_fallback") for c in self.floors.values()]:
             if e and e not in series:
                 series[e] = self._series(influx, e, start, end, STALE_S if e in limited else None)
                 if ha is not None:
-                    try:
-                        periods = ha.unavailable_periods(e, start, end)
-                    except Exception as exc:
-                        log.warning("Thermal history: no recorder history for %s (%s), unavailable periods not removed",
-                                    e, exc)
-                        periods = []
+                    periods = None
+                    for attempt in range(3):        # HA may still be starting (host reboot)
+                        try:
+                            periods = ha.unavailable_periods(e, start, end)
+                            break
+                        except Exception as exc:
+                            log.warning("Thermal history: recorder history for %s not available (%s)%s", e, exc,
+                                        ", retrying in 30 s" if attempt < 2 else " - unavailable periods not removed")
+                            if attempt < 2:
+                                time.sleep(30)
+                    periods = periods or []
+                    for a, b in periods:
+                        masked.update(range(int(a) // SLOT_S * SLOT_S, int(b) + 1, SLOT_S))
                     n = self._mask_unavailable(series[e], periods)
                     if n:
                         log.info("Thermal history: %s was unavailable in %d period(s), %.1f h removed (longest from %s)",
@@ -353,11 +362,16 @@ class BuildingThermalModel:
             ps = [mean(e, slot) for e in self.power_sensors]
             irr = mean(self.irradiance, slot) if self.irradiance else 0.0
             if to is None or any(v is None for v in temps.values()) or any(v is None for v in ps):
+                if slot in masked:      # remember it: once the recorder has purged that period, InfluxDB
+                    gaps.add(slot)      # alone would fill it with the last value again
                 continue
             self.slots[slot] = {"t": temps, "to": to, "i": max(irr or 0.0, 0.0), "p": sum(max(v, 0.0) for v in ps)}
             n_new += 1
+        cutoff = int(end.timestamp()) - HISTORY_DAYS * 86400
+        self.result["gaps"] = sorted(g for g in gaps if g >= cutoff)
         log.info("Thermal history: %d slots rebuilt from InfluxDB (%d floor values from fallback sensors), "
-                 "%d slots in total, %.1f days", n_new, n_fb, len(self.slots), len(self.slots) / 48.0)
+                 "%d slots in total, %.1f days, %d slots remembered as gaps", n_new, n_fb, len(self.slots),
+                 len(self.slots) / 48.0, len(self.result["gaps"]))
         self.save()
         self.refit()
 
@@ -387,9 +401,19 @@ class BuildingThermalModel:
         starts = _windows(T, To, I, P)
         if len(starts) == 0:
             return None, "no complete 24 h window yet"
-        split = grid[-1] - TEST_DAYS * 86400 - HORIZON * SLOT_S
+        # test = the most recent complete 24 h windows covering TEST_DAYS (without gaps this is exactly
+        # "the last 2 days"); after a data gap the clean days before it are used, so one outage does not
+        # leave EMHASS without a valid model until 2 new days have passed - as long as they are recent.
+        latest = grid[starts[-1]]
+        if grid[-1] - (latest + HORIZON * SLOT_S) > MAX_TEST_AGE_S:
+            return None, f"collecting data (last complete 24 h window ended {(grid[-1] - latest) / 86400 - 1:.1f} days ago)"
+        test_from = latest - TEST_DAYS * 86400
+        recent = starts[grid[starts] >= test_from]
+        if len(recent[::STRIDE]) < 4:       # gap inside the test period: take the newest windows before it
+            recent = starts[-max(1, int(TEST_DAYS * 86400 / SLOT_S)):]
+        split = grid[recent[0]]
         tr = starts[grid[starts] < split][::STRIDE // 2 or 1]
-        te = starts[grid[starts] >= split][::STRIDE]
+        te = recent[::STRIDE]
         train_days = float((grid[tr[-1]] - grid[tr[0]]) / 86400 + 1) if len(tr) else 0.0
         heat_kwh = float(np.nansum(P[grid < split]) * DT_H / 1000.0)
         if train_days < MIN_TRAIN_DAYS or len(te) < 4:

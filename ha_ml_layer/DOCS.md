@@ -214,7 +214,11 @@ unavailable, corrected by the learned difference between both sensors
 
 `valid` only if, on the last 2 days (not used for fitting), the 24 h error
 (`rmse_24h`) is not worse than the trivial forecast "the temperature stays as it
-is" (`rmse_24h_persistence`) + 0.1 K. Before that: at least 4 training days and
+is" (`rmse_24h_persistence`) + 0.1 K. After a data gap the most recent complete
+24 h windows before it are used as test days, as long as they ended at most 4 days
+ago - one sensor outage does not take the model away for two days. Slots that
+could not be built because an input was unavailable are remembered (InfluxDB
+alone would fill them again once the recorder has purged that period). Before that: at least 4 training days and
 2 kWh of heating energy (attribute `info` says what is missing). Use the values
 only when valid, e.g. inside your `def_load_config` / `thermal_config`:
 
