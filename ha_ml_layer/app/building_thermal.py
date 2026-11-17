@@ -57,6 +57,8 @@ STALE_S = 12 * 3600         # InfluxDB keeps no "unavailable": a main temperatur
                             # is carried at most 12 h (others: unlimited - HA writes only changes)
 OFFSET_ALPHA = 0.02         # EMA of (main - fallback) temperature while both report
 VALID_TOLERANCE_K = 0.1
+MAX_FILL_SLOTS = 4          # gaps up to 2 h (HA restart, short sensor drop-out) are bridged linearly in the fit;
+                            # longer outages stay excluded (every missing slot invalidates all 30 h windows over it)
 MAX_TEST_AGE_S = 4 * 86400  # test windows must have ended within this time, else "collecting data"
 MIN_SLOT_SHARE = 0.5        # slot needs half of its polls
 MIN_HEATING_KWH = 2.0       # heating energy in the training data, else heating_rate is not identifiable
@@ -74,6 +76,33 @@ def _f(st):
         return v if math.isfinite(v) else None
     except (TypeError, KeyError, ValueError):
         return None
+
+
+# --------------------------------------------------------------------------- gaps
+def _fill_short(a, max_len):
+    """Linear interpolation of NaN runs of at most max_len values between two known values (in place).
+    Returns the number of values filled. Runs at the edges or longer than max_len stay NaN."""
+    n, i, filled = len(a), 0, 0
+    while i < n:
+        if not np.isnan(a[i]):
+            i += 1
+            continue
+        j = i
+        while j < n and np.isnan(a[j]):
+            j += 1
+        if i > 0 and j < n and j - i <= max_len:
+            a[i:j] = np.linspace(a[i - 1], a[j], j - i + 2)[1:-1]
+            filled += j - i
+        i = j
+    return filled
+
+
+def _longest_run(mask):
+    best = cur = 0
+    for m in mask:
+        cur = cur + 1 if m else 0
+        best = max(best, cur)
+    return best
 
 
 # --------------------------------------------------------------------------- model
@@ -392,8 +421,14 @@ class BuildingThermalModel:
             for f in self.floors:
                 t = (v.get("t") or {}).get(f)
                 temps[f][i] = np.nan if t is None else t
+        filled = 0
+        for arr in [to, irr, p] + list(temps.values()):
+            filled += _fill_short(arr, MAX_FILL_SLOTS)
         stack = np.stack(list(temps.values()))
         house = stack.mean(axis=0)          # NaN if any floor is missing
+        missing = np.isnan(house) | np.isnan(to) | np.isnan(p)
+        self.result["gap_stats"] = {"bridged_values": int(filled), "missing_slots": int(missing.sum()),
+                                    "longest_gap_h": round(_longest_run(missing) * DT_H, 1)}
         return np.array(grid), temps, house, to, irr, p
 
     def _fit_one(self, T, To, I, P, grid):
@@ -454,7 +489,8 @@ class BuildingThermalModel:
         except Exception:
             log.exception("Thermal fit failed")
             self.result["info"] = "fit failed (see log)"
-        log.info("Thermal fit (%.0f s): %s | %s", time.monotonic() - t0, self.result["info"], self.result["house"])
+        log.info("Thermal fit (%.0f s): %s | gaps %s | %s", time.monotonic() - t0, self.result["info"],
+                 self.result.get("gap_stats"), self.result["house"])
         self.save()
 
     # --- outputs ----------------------------------------------------------------
@@ -475,5 +511,6 @@ class BuildingThermalModel:
             {"friendly_name": "Building Thermal for EMHASS", "nominal_power_w": self.nominal_power,
              "heating_rate_at_nominal_power": normalised, "floors": len(self.floors),
              "slots": len(self.slots), "info": self.result.get("info"),
+             "gap_stats": self.result.get("gap_stats"),
              "last_fit": datetime.fromtimestamp(self.result.get("last_fit") or 0, timezone.utc).isoformat(),
              "source": src}, **{kk: v for kk, v in r.items() if kk != "valid"}, valid=valid))

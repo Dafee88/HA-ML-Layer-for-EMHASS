@@ -216,7 +216,7 @@ unavailable, corrected by the learned difference between both sensors
 (`rmse_24h`) is not worse than the trivial forecast "the temperature stays as it
 is" (`rmse_24h_persistence`) + 0.1 K. After a data gap the most recent complete
 24 h windows before it are used as test days, as long as they ended at most 4 days
-ago - one sensor outage does not take the model away for two days. Slots that
+ago - one sensor outage does not take the model away for two days. Gaps of up to 2 h (Home Assistant restart, short sensor drop-out) are bridged by linear interpolation for the fit; longer outages stay excluded (attribute `gap_stats` of `sensor.building_thermal_emhass`). Slots that
 could not be built because an input was unavailable are remembered (InfluxDB
 alone would fill them again once the recorder has purged that period). Before that: at least 4 training days and
 2 kWh of heating energy (attribute `info` says what is missing). Use the values

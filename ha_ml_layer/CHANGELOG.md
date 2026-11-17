@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.9.4 — 2026-11-17
+
+### Gebäudemodell: kurze Lücken überbrücken
+- Lücken bis 2 h (HA-Neustart, kurzer Sensor-Aussetzer) werden für den Fit
+  linear überbrückt; längere Ausfälle bleiben ausgeschlossen. Grund: seit 0.9.2
+  wird jede `unavailable`-Phase entfernt, und jeder fehlende 30-min-Slot machte
+  alle 30-h-Fenster (24 h + Trägheit) darüber unbrauchbar - live gab es seit
+  ~11.11. kein vollständiges Fenster mehr ("collecting data, last complete
+  24 h window ended 5.9 days ago").
+- Neues Attribut `gap_stats` (überbrückte Werte, fehlende Slots, längste
+  Lücke) an `sensor.building_thermal_emhass`, auch im Log der Fit-Zeile.
+- Nachgerechnet mit echten Daten 27.10.-16.11. (Pi-Ausfall entfernt + 2
+  bekannte HA-Neustarts + 26 kurze Heizleistungs-, 8 Eve- und 10
+  Außentemperatur-Aussetzer, 10 Zufallsvarianten): 0.9.3 in 10/10 "collecting
+  data" (wie live), 0.9.4 in 10/10 gültig, `heating_rate` 0,315-0,327,
+  `thermal_inertia` 4,5 h, `rmse_24h` ~0,38 K gegen ~0,43 K.
+
 ## 0.9.3 — 2026-11-17
 
 ### Gebäudemodell: robuster nach Datenlücken
