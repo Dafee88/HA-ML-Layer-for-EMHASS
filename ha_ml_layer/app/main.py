@@ -31,6 +31,7 @@ from building_thermal import EMHASS_SENSOR, BuildingThermalModel
 from history import learn_from_history
 from accuracy import DailyAccuracy
 from local_weather import LocalWeatherModel, to_hpa
+from reference_prior import ReferencePrior
 
 ENTITY_TOMORROW_KWH = "sensor.pv_ml_forecast_tomorrow_kwh"
 ENTITY_TODAY_REMAINING_KWH = "sensor.pv_ml_forecast_today_remaining_kwh"
@@ -242,10 +243,13 @@ def pv_cycle(ha, cfg, dayahead, nowcast, slot_acc, log, influx=None, snapshot=No
                 humidity = None
         weather.add_irradiance(now, irradiance, ghi_now, elev_now)
         weather.add_pressure(now, pressure_hpa)
+        weather.add_temperature(now, outdoor)
+        weather.add_reference(now, reference, ghi_now, elev_now)
         if weather.evening(now, humidity):
             p = weather.pending or {}
-            log.info("Local weather: outlook for %s csi regression=%s climatology=%s persistence=%s, used: %s",
-                     p.get("date"), p.get("model"), p.get("clim"), p.get("persist"), weather.best() or "climatology")
+            log.info("Local weather: outlook for %s csi regression=%s climatology=%s persistence=%s "
+                     "reference prior=%s (clim %s), used: %s", p.get("date"), p.get("model"), p.get("clim"),
+                     p.get("persist"), p.get("pre"), p.get("pre_clim"), weather.best() or "climatology")
         weather.save()
 
     # what the forecast models learn from: the actual power, or -- while the
@@ -566,8 +570,15 @@ def run():
         max(1, round(MIN_SLOT_COVERAGE * SLOT.total_seconds() / cfg.poll_interval)))
     station = StationModel() if cfg.pv_enabled and cfg.pv_irradiance else None
     thermal = BuildingThermalModel(cfg, max_gap_s=2 * cfg.poll_interval + 60) if cfg.thermal_enabled else None
+    prior = None
+    if station is not None and cfg.weather_reference_history:
+        try:
+            prior = ReferencePrior(cfg.weather_reference_history, cfg.timezone, cfg.influx_snapshot_hour).load()
+        except Exception as exc:
+            log.warning("Reference prior not available (%s): local weather outlook without it", exc)
     weather = LocalWeatherModel(bool(cfg.weather_pressure), bool(cfg.weather_humidity), cfg.timezone,
-                                cfg.influx_snapshot_hour) if station is not None else None
+                                cfg.influx_snapshot_hour, use_temperature=bool(cfg.thermal_outdoor_temp),
+                                prior=prior) if station is not None else None
 
     influx = None
     if cfg.influx_enabled:
@@ -582,7 +593,9 @@ def run():
                 log.exception("Thermal history: rebuilding from InfluxDB failed, live learning continues")
         if weather is not None:
             try:
-                weather.backfill(influx, cfg.pv_irradiance, cfg.weather_pressure, cfg.weather_humidity)
+                weather.backfill(influx, cfg.pv_irradiance, cfg.weather_pressure, cfg.weather_humidity,
+                                 temperature_entity=cfg.thermal_outdoor_temp,
+                                 reference_entity=cfg.pv_reference_irradiance)
             except Exception:
                 log.exception("Local weather history: rebuilding from InfluxDB failed, live learning continues")
         if dayahead is not None and cfg.influx_learn_history:

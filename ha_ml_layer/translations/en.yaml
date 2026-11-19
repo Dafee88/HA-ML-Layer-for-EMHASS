@@ -56,6 +56,9 @@ configuration:
   weather_humidity:
     name: Relative humidity (local weather outlook)
     description: Optional outdoor humidity sensor (%) of your weather station, extra input for the local weather outlook.
+  weather_reference_history:
+    name: Reference station history (CSV, local weather outlook)
+    description: Optional. Path or glob of hourly CSV files of a nearby professional station (GeoSphere Austria data hub, dataset klima-v2-1h with cglo, p, rf, tl), e.g. /config/ha_ml_layer/station_*.csv. The local weather outlook is pre-trained once on these years of history and fed with your own station through a learned mapping. Used only if it beats climatology. No download, works offline.
   pv_peak_power_kw:
     name: PV peak power (kWp)
     description: Optional. Used to report the error as nMAE in percent of the peak power.

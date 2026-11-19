@@ -56,6 +56,7 @@ Einrichtung, EMHASS-`rest_command` und Beispiel für den Abregelungs-Sensor:
 | `pv_curtailed_entity` (optional) | `binary_sensor.pv_curtailed` | `on`, solange die PV abgeregelt sein kann (Akku voll, Einspeiselimit) |
 | `pv_reference_irradiance` (optional) | `sensor.reference_global_radiation` | professionelle Station in der Nähe, nur zur Kontrolle der Kalibrierung |
 | `weather_pressure` / `weather_humidity` (optional) | `sensor.pressure_relative` / `sensor.outdoor_humidity` | Luftdruck und Luftfeuchte der Wetterstation für die lokale Wetterprognose (`sensor.pv_ml_local_weather`) |
+| `weather_reference_history` (optional) | `/config/ha_ml_layer/station_*.csv` | Stunden-CSV einer nahen Profi-Station (GeoSphere `klima-v2-1h`) zum Vortraining der lokalen Wetterprognose |
 | `pv_peak_power_kw` (optional) | `6.5` | Anlagenleistung für nMAE in % |
 
 Nicht als Eingang verwenden: `sensor.p_pv_forecast`. Das ist die Ausgabe von
@@ -218,7 +219,7 @@ Eingaben (z. B. ungültige Entity-ID) stehen beim Start als `Configuration:` im 
 |---|---|
 | Allgemein | `poll_interval_seconds` (60–3600, empfohlen 300), `log_level`, `pv_enabled`, `thermal_enabled` |
 | Standort | optional `latitude`, `longitude`, `timezone` (leer = aus der Home-Assistant-Konfiguration) |
-| PV | `pv_solcast_today`, `pv_solcast_tomorrow` (Solcast-Sensoren mit `detailedForecast`), `pv_actual_power` (W), optional `pv_actual_power_fallback`, `pv_irradiance` (Wetterstation), `pv_forecast_solar_today`/`_tomorrow`, `pv_curtailed_entity`, `pv_reference_irradiance`, `weather_pressure`, `weather_humidity`, `pv_peak_power_kw` |
+| PV | `pv_solcast_today`, `pv_solcast_tomorrow` (Solcast-Sensoren mit `detailedForecast`), `pv_actual_power` (W), optional `pv_actual_power_fallback`, `pv_irradiance` (Wetterstation), `pv_forecast_solar_today`/`_tomorrow`, `pv_curtailed_entity`, `pv_reference_irradiance`, `weather_pressure`, `weather_humidity`, `weather_reference_history`, `pv_peak_power_kw` |
 | Wärmemodell | `thermal_outdoor_temp`, optional `thermal_outdoor_temp_fallback`, optional `thermal_heating_stage`, `thermal_floors` (pro Etage `name`, `temperature_sensor`, optional `temperature_sensor_fallback` und `heating_switch` oder `climate`) |
 | InfluxDB | `influxdb_enabled`, `influxdb_host` (InfluxDB-Add-on: `a0d7b954-influxdb`), `influxdb_port`, `influxdb_ssl`, `influxdb_database`, `influxdb_username`, `influxdb_password`, `influxdb_dayahead_snapshot_hour` |
 

@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.10.0 — 2026-11-19
+
+### Lokale Wetterprognose: Vortraining mit Referenzstation
+- Neue Option `weather_reference_history` (Pfad/Glob zu Stunden-CSV einer
+  nahen Profi-Station, GeoSphere `klima-v2-1h`). Das Modell wird einmalig auf
+  Jahren Historie trainiert (Index heute, Druckänderung/-anomalie, Feuchte,
+  Abendabkühlung, Tagesspanne, Saison), die eigene Station speist es über ein
+  gelerntes lineares Mapping pro Merkmal (ab 20 gemeinsamen Tagen).
+- Bewertung wie bisher gegen Klimatologie; genutzt nur wenn besser
+  (`forecast_method: reference prior`). Neue Attribute an
+  `sensor.pv_ml_local_weather`. Cache `/data/reference_prior_v1.json`.
+- Temperatur (`thermal_outdoor_temp`) fließt in die Merkmale ein.
+- Backtest: 8 Jahre Referenzstation +14-18 % gegen Klimatologie; mit den
+  Eingängen der eigenen Station (4 km entfernt) +13,7 % (53 Tage) bzw.
+  +18,1 % (Testhälfte). Ohne Option unverändert.
+- Enthält 0.9.4.
+
 ## 0.9.4 — 2026-11-17
 
 ### Gebäudemodell: kurze Lücken überbrücken

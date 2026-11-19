@@ -104,6 +104,26 @@ through unchanged.
   number of days. With InfluxDB the days are rebuilt from history at the first
   start (and when the inputs change). State file `/data/local_weather_v1.json`.
 
+  **Pre-training with a reference station (optional,
+  `weather_reference_history`):** your own station has weeks of history, a
+  nearby national weather service station has years. Download its hourly data
+  once as CSV (GeoSphere Austria data hub, dataset `klima-v2-1h`, parameters
+  `cglo,p,rf,tl`; time stamp = end of the hour), copy the files to e.g.
+  `/config/ha_ml_layer/` and set the option to a path or glob such as
+  `/config/ha_ml_layer/station_*.csv`. At start the same kind of model is
+  fitted on these years (features: today's index, pressure change and anomaly,
+  humidity, evening cooling Tmax - T now, daily temperature range, season; the
+  newest 120 days are held out). Your station feeds it through a linear
+  mapping per feature learned on the days both stations have data (at least
+  20). It is scored like the other methods (against the reference station's
+  measured day if `pv_reference_irradiance` is set, otherwise against your own)
+  and only used if it beats climatology (`forecast_method: reference prior`).
+  Attributes `csi_reference_forecast`, `mae_csi_reference_prior`,
+  `mae_csi_reference_climatology`, `reference_evaluated_days`,
+  `reference_mapping`, `reference_prior`. Cache `/data/reference_prior_v1.json`
+  (rebuilt when the files change). Temperature inputs come from
+  `thermal_outdoor_temp`. Nothing is downloaded.
+
 **Low output (snow, shading, faults):** with a weather station, PV power below
 50 % of the station's potential (potential at least 300 W) while not curtailed
 is not learned by the forecast models (attribute `low_output`). If such an

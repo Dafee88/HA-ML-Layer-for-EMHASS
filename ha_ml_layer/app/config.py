@@ -91,6 +91,7 @@ class Config:
         self.pv_reference_irradiance = _entity(opts, "pv_reference_irradiance", "", problems)
         self.weather_pressure = _entity(opts, "weather_pressure", "", problems)
         self.weather_humidity = _entity(opts, "weather_humidity", "", problems)
+        self.weather_reference_history = str(opts.get("weather_reference_history") or "").strip()
         kwp = opts.get("pv_peak_power_kw")
         self.pv_peak_power_kw = float(kwp) if kwp not in (None, "") and float(kwp) > 0 else None
 
