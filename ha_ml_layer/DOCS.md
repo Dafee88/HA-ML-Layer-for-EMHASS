@@ -124,6 +124,21 @@ through unchanged.
   (rebuilt when the files change). Temperature inputs come from
   `thermal_outdoor_temp`. Nothing is downloaded.
 
+- `sensor.pv_ml_irradiance_corrected` ("Irradiance (station, corrected)", needs
+  `pv_irradiance` and `pv_reference_irradiance`) – your station's irradiance
+  corrected against the reference station. Many hobby stations (e.g. Ecowitt)
+  measure lux and divide by a fixed factor, which fits sun and clouds
+  differently; a gain in the station's settings only moves the level. The
+  add-on learns the ratio reference / own per hour in a table by clearness
+  (own clear-sky index) and sun elevation (median of the last 60 hours per
+  cell, else the overall gain). Each hour is scored before it is learned;
+  the state uses the method with the lowest error (`method`: raw, gain or
+  table; `mae_raw_w_m2`, `mae_gain_w_m2`, `mae_table_w_m2`, `learned_hours`,
+  `scored_hours`, `gain`, `table`, `raw_w_m2`, `reference_w_m2`). Without
+  internet the learned table keeps working. With InfluxDB it learns the last
+  60 days at the first start. The forecast models keep using the raw value
+  (they have learned its scale). State file `/data/irradiance_correction_v1.json`.
+
 **Low output (snow, shading, faults):** with a weather station, PV power below
 50 % of the station's potential (potential at least 300 W) while not curtailed
 is not learned by the forecast models (attribute `low_output`). If such an

@@ -32,10 +32,12 @@ from history import learn_from_history
 from accuracy import DailyAccuracy
 from local_weather import LocalWeatherModel, to_hpa
 from reference_prior import ReferencePrior
+from irradiance_correction import IrradianceCorrection
 
 ENTITY_TOMORROW_KWH = "sensor.pv_ml_forecast_tomorrow_kwh"
 ENTITY_TODAY_REMAINING_KWH = "sensor.pv_ml_forecast_today_remaining_kwh"
 ENTITY_LOCAL_CURVE = "sensor.pv_local_forecast_curve"      # station-only curve, runs in parallel
+ENTITY_IRRADIANCE_CORRECTED = "sensor.pv_ml_irradiance_corrected"
 WATCH_INTERVAL_S = 60
 # PV far below the station's potential although not curtailed: snow on the
 # panels, shading, a fault. Such readings are not learned (they would teach
@@ -130,7 +132,7 @@ def daily_energy(rows, now, slot0, tz, today, tomorrow, dayahead, day_ctx, stati
 
 
 def pv_cycle(ha, cfg, dayahead, nowcast, slot_acc, log, influx=None, snapshot=None, station=None,
-             accuracy=None, low=None, weather=None):
+             accuracy=None, low=None, weather=None, irr_corr=None):
     """One cycle (default 5 min).
 
     Primary: Solcast (+ optional second provider) corrected by the day-ahead
@@ -230,6 +232,19 @@ def pv_cycle(ha, cfg, dayahead, nowcast, slot_acc, log, influx=None, snapshot=No
             station.update_reference(irradiance, reference, elev_now)
     if station is not None:
         station.save()
+
+    # --- own irradiance corrected against the reference (published only, models keep the raw value) ---
+    if irr_corr is not None:
+        irr_corr.add(now, irradiance, reference, ghi_now, elev_now)
+        irr_corr.save()
+        if irradiance is not None:
+            ha.set_state(ENTITY_IRRADIANCE_CORRECTED, round(irr_corr.corrected(irradiance, ghi_now, elev_now), 1),
+                         attributes=dict(irr_corr.attributes(), **{
+                             "unit_of_measurement": "W/m²", "device_class": "irradiance",
+                             "state_class": "measurement", "friendly_name": "Irradiance (station, corrected)",
+                             "raw_w_m2": _r(irradiance), "reference_w_m2": _r(reference),
+                             "source": "ha-ml-layer / own station corrected by a ratio table (clearness x sun "
+                                       "elevation) learned against the reference irradiance"}))
 
     # --- local weather outlook (offline fallback for tomorrow's cloudiness) ----
     pressure_hpa = humidity = None
@@ -477,6 +492,8 @@ def pv_cycle(ha, cfg, dayahead, nowcast, slot_acc, log, influx=None, snapshot=No
         "station_potential_w": _r(potential_now),
         "station_w_per_w_m2": _r(station.ratio, 4) if station else None,
         "irradiance_vs_reference": _r(station.ref_ratio, 4) if station else None,
+        "irradiance_corrected_w_m2": _r(irr_corr.corrected(irradiance, ghi_now, elev_now))
+        if irr_corr is not None and irradiance is not None else None,
         "clear_sky_ghi_w_m2": _r(ghi_now),
         "elevation_deg": _r(elev_now, 2),
         "azimuth_deg": _r(azi_now, 1),
@@ -579,6 +596,7 @@ def run():
     weather = LocalWeatherModel(bool(cfg.weather_pressure), bool(cfg.weather_humidity), cfg.timezone,
                                 cfg.influx_snapshot_hour, use_temperature=bool(cfg.thermal_outdoor_temp),
                                 prior=prior) if station is not None else None
+    irr_corr = IrradianceCorrection() if station is not None and cfg.pv_reference_irradiance else None
 
     influx = None
     if cfg.influx_enabled:
@@ -598,6 +616,11 @@ def run():
                                  reference_entity=cfg.pv_reference_irradiance)
             except Exception:
                 log.exception("Local weather history: rebuilding from InfluxDB failed, live learning continues")
+        if irr_corr is not None:
+            try:
+                irr_corr.backfill(influx, cfg.pv_irradiance, cfg.pv_reference_irradiance)
+            except Exception:
+                log.exception("Irradiance correction: learning from InfluxDB failed, live learning continues")
         if dayahead is not None and cfg.influx_learn_history:
             try:
                 dayahead = learn_from_history(influx, cfg, station, dayahead)
@@ -627,7 +650,7 @@ def run():
             if dayahead is not None:
                 try:
                     pv_cycle(ha, cfg, dayahead, nowcast, slot_acc, log, influx, snapshot, station,
-                             accuracy, low, weather)
+                             accuracy, low, weather, irr_corr)
                 except Exception:
                     log.exception("Error in PV cycle, retrying next interval.")
         else:

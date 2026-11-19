@@ -15,6 +15,23 @@
 - Backtest: 8 Jahre Referenzstation +14-18 % gegen Klimatologie; mit den
   Eingängen der eigenen Station (4 km entfernt) +13,7 % (53 Tage) bzw.
   +18,1 % (Testhälfte). Ohne Option unverändert.
+
+### Strahlung der eigenen Station korrigiert
+- Neuer Sensor `sensor.pv_ml_irradiance_corrected` (braucht `pv_irradiance`
+  und `pv_reference_irradiance`): eigene Strahlung, korrigiert gegen die
+  Referenzstation mit einer gelernten Tabelle Verhältnis Referenz/eigen nach
+  Bewölkung (CSI) x Sonnenhöhe. Grund: Lux-Sensoren (Ecowitt) rechnen mit einem
+  festen Faktor, der bei Sonne und Wolken unterschiedlich passt; ein Gain in
+  der Station verschiebt nur das Niveau.
+- Jede Stunde wird vor dem Lernen gewertet; genutzt wird die Methode mit dem
+  kleinsten Fehler (roh / Gain / Tabelle). Ohne Internet bleibt die Tabelle
+  aktiv. Mit InfluxDB werden beim ersten Start 60 Tage nachgelernt.
+- Nachgerechnet (Ecowitt vs Gumpoldskirchen, 21.09.-16.11.2026, laufend
+  gelernt): MAE roh 71,9 / Gain 53,7 / Tabelle 52,4 W/m²; Test 03.-16.11.
+  Korrelation mit der PV pro Stunde 0,925 -> 0,943.
+- Die Prognosemodelle nutzen weiter den Rohwert (sie haben dessen Skala
+  gelernt); Umstellung erst nach Live-Prüfung.
+
 - Enthält 0.9.4.
 
 ## 0.9.4 — 2026-11-17
