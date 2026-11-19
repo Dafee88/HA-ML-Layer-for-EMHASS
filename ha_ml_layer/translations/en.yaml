@@ -49,7 +49,7 @@ configuration:
     description: Optional binary_sensor or input_boolean that is 'on' while PV may be curtailed (full battery, export limit). Then the station's potential power is learned instead of the curtailed actual power.
   pv_reference_irradiance:
     name: Reference irradiance (W/m²)
-    description: Optional nearby professional station (e.g. GeoSphere/DWD integration). Only used to track the calibration factor of your own sensor (attribute irradiance_vs_reference).
+    description: Optional nearby professional station (e.g. GeoSphere/DWD integration). Tracks the calibration of your own sensor (attribute irradiance_vs_reference), learns the corrected irradiance (sensor.pv_ml_irradiance_corrected) and scores the reference-station weather outlook.
   weather_pressure:
     name: Air pressure (local weather outlook)
     description: Optional pressure sensor of your weather station (hPa, inHg, mmHg, kPa or Pa via unit_of_measurement). With pv_irradiance it feeds the local weather outlook (sensor.pv_ml_local_weather), which works without internet and sharpens the offline fallback for the next day.
